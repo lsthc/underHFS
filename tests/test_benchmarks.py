@@ -7,3 +7,5 @@ def test_microbenchmarks_return_cpu_results():
     assert [item["name"] for item in payload] == ["add", "matmul"]
     assert all(item["backend"] == "cpu" for item in payload)
     assert all(item["ops_per_second"] > 0 for item in payload)
+    assert all(item["latency_p50_ms"] >= 0 for item in payload)
+    assert all(item["latency_p95_ms"] >= item["latency_p50_ms"] for item in payload)

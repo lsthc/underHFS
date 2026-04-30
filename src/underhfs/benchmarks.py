@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from statistics import median
 from time import perf_counter
 from typing import Callable
 
@@ -15,6 +16,8 @@ class BenchmarkResult:
     iterations: int
     seconds: float
     ops_per_second: float
+    latency_p50_ms: float
+    latency_p95_ms: float
     output_sample: float
 
     def to_dict(self) -> dict[str, float | int | str]:
@@ -24,6 +27,8 @@ class BenchmarkResult:
             "iterations": self.iterations,
             "seconds": self.seconds,
             "ops_per_second": self.ops_per_second,
+            "latency_p50_ms": self.latency_p50_ms,
+            "latency_p95_ms": self.latency_p95_ms,
             "output_sample": self.output_sample,
         }
 
@@ -63,9 +68,12 @@ def _bench(
     sample = 0.0
     for _ in range(warmup):
         sample = fn()
+    latencies: list[float] = []
     start = perf_counter()
     for _ in range(iterations):
+        iteration_start = perf_counter()
         sample = fn()
+        latencies.append(perf_counter() - iteration_start)
     elapsed = perf_counter() - start
     return BenchmarkResult(
         name=name,
@@ -73,8 +81,18 @@ def _bench(
         iterations=iterations,
         seconds=elapsed,
         ops_per_second=iterations / elapsed if elapsed > 0 else float("inf"),
+        latency_p50_ms=median(latencies) * 1000.0,
+        latency_p95_ms=_percentile(latencies, 0.95) * 1000.0,
         output_sample=sample,
     )
+
+
+def _percentile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * q))))
+    return ordered[index]
 
 
 def _vector(size: int, offset: float = 0.0) -> list[float]:
