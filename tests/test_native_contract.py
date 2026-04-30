@@ -15,6 +15,7 @@ def test_native_contract_probe_when_available():
     if result["cuda_enabled"]:
         assert result["cuda_add_f32"] == [4.0, 6.0]
         assert result["cuda_tensor_add_f32"] == [4.0, 6.0]
+        assert result["cuda_tensor_matmul_f32"] == [19.0, 22.0, 43.0, 50.0]
 
 
 def test_tensor_uses_native_cpu_fast_path_when_available():
@@ -46,3 +47,15 @@ def test_tensor_uses_native_cuda_add_when_available():
     assert out.backend == "native_cuda"
     assert str(out.device) == "cuda:0"
     assert out.tolist() == [4.0, 6.0]
+
+
+def test_tensor_uses_native_cuda_matmul_when_available():
+    state = status()
+    if not state.cuda_enabled:
+        return
+    left = tensor([[1.0, 2.0], [3.0, 4.0]]).cuda()
+    right = tensor([[5.0, 6.0], [7.0, 8.0]]).cuda()
+    out = left @ right
+    assert out.backend == "native_cuda"
+    assert str(out.device) == "cuda:0"
+    assert out.tolist() == [[19.0, 22.0], [43.0, 50.0]]

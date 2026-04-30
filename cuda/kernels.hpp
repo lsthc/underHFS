@@ -18,6 +18,7 @@ class CudaTensorF32 {
   std::size_t numel() const;
   std::vector<float> to_host() const;
   CudaTensorF32 add(const CudaTensorF32& other) const;
+  CudaTensorF32 matmul(const CudaTensorF32& other) const;
 
  private:
   CudaTensorF32(float* device, std::vector<std::size_t> shape);

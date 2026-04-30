@@ -502,6 +502,25 @@ class Tensor:
         if k != k2:
             raise ValueError(f"matmul shape mismatch: {self.shape} @ {rhs.shape}")
         out = None
+        if self._native_cuda_eligible() and rhs._native_cuda_eligible():
+            try:
+                if self._native_cuda is None:
+                    self._attach_cuda_storage()
+                if rhs._native_cuda is None:
+                    rhs._attach_cuda_storage()
+                out = Tensor(
+                    [0.0] * (m * n),
+                    shape=(m, n),
+                    requires_grad=self.requires_grad or rhs.requires_grad,
+                    device=self.device,
+                    _children=(self, rhs),
+                    _op="matmul",
+                )
+                out._native_cuda = self._native_cuda.matmul(rhs._native_cuda)
+                out.backend = "native_cuda"
+                out._sync_from_cuda()
+            except Exception:
+                out = None
         if self._native_cpu_eligible() and rhs._native_cpu_eligible():
             try:
                 out = Tensor._from_native_core(

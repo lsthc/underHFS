@@ -15,6 +15,20 @@ extern "C" __global__ void underhfs_add_f32(
   }
 }
 
+extern "C" __global__ void underhfs_matmul_f32(
+    const float* left, const float* right, float* out, int m, int k, int n) {
+  int row = blockIdx.y * blockDim.y + threadIdx.y;
+  int col = blockIdx.x * blockDim.x + threadIdx.x;
+  if (row >= m || col >= n) {
+    return;
+  }
+  float acc = 0.0f;
+  for (int p = 0; p < k; ++p) {
+    acc += left[row * k + p] * right[p * n + col];
+  }
+  out[row * n + col] = acc;
+}
+
 namespace underhfs {
 
 namespace {
@@ -106,6 +120,34 @@ CudaTensorF32 CudaTensorF32::add(const CudaTensorF32& other) const {
     throw;
   }
   return CudaTensorF32(out, shape_);
+}
+
+CudaTensorF32 CudaTensorF32::matmul(const CudaTensorF32& other) const {
+  if (shape_.size() != 2 || other.shape_.size() != 2) {
+    throw std::invalid_argument("CudaTensorF32 matmul currently requires 2D tensors");
+  }
+  const auto m = static_cast<int>(shape_[0]);
+  const auto k = static_cast<int>(shape_[1]);
+  const auto k2 = static_cast<int>(other.shape_[0]);
+  const auto n = static_cast<int>(other.shape_[1]);
+  if (k != k2) {
+    throw std::invalid_argument("CudaTensorF32 matmul shape mismatch");
+  }
+  std::vector<std::size_t> out_shape = {shape_[0], other.shape_[1]};
+  const auto out_numel = static_cast<std::size_t>(m) * static_cast<std::size_t>(n);
+  float* out = nullptr;
+  check_cuda(cudaMalloc(&out, out_numel * sizeof(float)), "CudaTensorF32 matmul cudaMalloc");
+  dim3 block(16, 16);
+  dim3 grid((n + block.x - 1) / block.x, (m + block.y - 1) / block.y);
+  underhfs_matmul_f32<<<grid, block>>>(device_, other.device_, out, m, k, n);
+  try {
+    check_cuda(cudaGetLastError(), "CudaTensorF32 matmul launch");
+    check_cuda(cudaDeviceSynchronize(), "CudaTensorF32 matmul sync");
+  } catch (...) {
+    cudaFree(out);
+    throw;
+  }
+  return CudaTensorF32(out, out_shape);
 }
 
 std::vector<float> cuda_add_f32_host(const std::vector<float>& left,

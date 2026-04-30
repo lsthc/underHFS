@@ -38,6 +38,7 @@ PYBIND11_MODULE(_core, m) {
       .def_property_readonly("shape", &underhfs::CudaTensorF32::shape)
       .def("numel", &underhfs::CudaTensorF32::numel)
       .def("to_host", &underhfs::CudaTensorF32::to_host)
-      .def("add", &underhfs::CudaTensorF32::add);
+      .def("add", &underhfs::CudaTensorF32::add)
+      .def("matmul", &underhfs::CudaTensorF32::matmul);
 #endif
 }
