@@ -26,6 +26,10 @@ native runtime bring-up phase.
 - `underhfs.cuda.require_kernel(op, device="cpu", dtype="fp32")`
 - `underhfs.runtime.MemoryPlanner`
 - `underhfs.runtime.OffloadExecutor`
+- `OffloadExecutor.offload_tensor(tensor, tier=MemoryTier.NVME)`
+- `OffloadExecutor.prefetch_tensor(handle)`
+- `OffloadExecutor.load_tensor(handle, device=None)`
+- `OffloadExecutor.release(handle)`
 
 ## Compile
 

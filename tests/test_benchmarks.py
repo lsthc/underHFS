@@ -24,3 +24,4 @@ def test_memory_benchmark_reports_offload_pressure():
     assert payload["placements"]["nvme"] == 32
     assert payload["offload_events"] == 2
     assert payload["oom_avoided"] is True
+    assert payload["prefetch_verified"] is True

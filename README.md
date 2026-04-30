@@ -105,7 +105,9 @@ external test and benchmark oracles.
 - Conv2d, fused AdamW, attention fusion, cuDNN, and NCCL now expose explicit
   backend status/launch-plan contracts so native runtime gaps are inspectable.
 - NVMe tensor offload can write, reload, and release Tensor payloads through an
-  `OffloadExecutor`; network offload remains a configured transport extension.
+  `OffloadExecutor`; offload payloads now include version and checksum
+  validation, prefetch caching, and benchmark verification. Network offload
+  remains a configured transport extension.
 - ONNX export/import has an `underhfs.onnx-lite` path with embedded state,
   checksum validation, and state_dict reload while full ONNX protobuf execution
   remains optional-runtime work.

@@ -8,7 +8,8 @@ from typing import Callable
 from underhfs import tensor
 from underhfs.cuda import MemoryPolicy, MemoryTier
 from underhfs.native import status as native_status
-from underhfs.runtime import MemoryPlanner
+from underhfs.runtime import MemoryPlanner, OffloadExecutor
+from underhfs.tensor import tensor
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class MemoryBenchmarkResult:
     offload_events: int
     oom_avoided: bool
     bottlenecks: tuple[str, ...]
+    prefetch_verified: bool = False
 
     def to_dict(self) -> dict[str, int | bool | dict[str, int] | list[str]]:
         return {
@@ -50,6 +52,7 @@ class MemoryBenchmarkResult:
             "offload_events": self.offload_events,
             "oom_avoided": self.oom_avoided,
             "bottlenecks": list(self.bottlenecks),
+            "prefetch_verified": self.prefetch_verified,
         }
 
 
@@ -104,13 +107,27 @@ def run_memory_benchmark(
         for tier, state in snapshot.items()
         if state["capacity_bytes"] > 0 and state["used_bytes"] > state["capacity_bytes"]
     )
+    prefetch_verified = _verify_offload_prefetch(actual_policy)
     return MemoryBenchmarkResult(
         requested_bytes=sum(tensor_bytes),
         placements=placements,
         offload_events=offload_events,
         oom_avoided=offload_events > 0 and actual_policy.allow_offload,
         bottlenecks=bottlenecks,
+        prefetch_verified=prefetch_verified,
     )
+
+
+def _verify_offload_prefetch(policy: MemoryPolicy) -> bool:
+    if MemoryTier.NVME not in policy.tiers:
+        return False
+    executor = OffloadExecutor(policy)
+    handle = executor.offload_tensor(tensor([1.0, 2.0]), MemoryTier.NVME)
+    try:
+        cached = executor.prefetch_tensor(handle)
+        return executor.load_tensor(cached).tolist() == [1.0, 2.0]
+    finally:
+        executor.release(handle)
 
 
 def _bench(

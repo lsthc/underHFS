@@ -50,7 +50,29 @@ def test_nvme_offload_executor_roundtrip(tmp_path=None):
     root = ".underhfs-offload-test" if tmp_path is None else tmp_path
     executor = OffloadExecutor(MemoryPolicy(scratch_path=str(root)))
     handle = executor.offload_tensor(tensor([[1.0, 2.0]]), MemoryTier.NVME)
+    assert handle.sha256
     loaded = executor.load_tensor(handle)
     assert handle.tier is MemoryTier.NVME
     assert loaded.tolist() == [[1.0, 2.0]]
+    cached = executor.prefetch_tensor(handle)
+    assert cached.cached
+    assert executor.cache_info()["prefetched_tensors"] == 1
+    assert executor.load_tensor(cached).tolist() == [[1.0, 2.0]]
     executor.release(handle)
+    assert executor.cache_info()["prefetched_tensors"] == 0
+
+
+def test_nvme_offload_executor_rejects_corruption(tmp_path=None):
+    root = ".underhfs-offload-corrupt-test" if tmp_path is None else tmp_path
+    executor = OffloadExecutor(MemoryPolicy(scratch_path=str(root)))
+    handle = executor.offload_tensor(tensor([1.0, 2.0]), MemoryTier.NVME)
+    with open(handle.path, "ab") as file:
+        file.write(b"corrupt")
+    try:
+        executor.load_tensor(handle)
+    except ValueError as exc:
+        assert "checksum mismatch" in str(exc)
+    else:
+        raise AssertionError("corrupted offload payload should fail validation")
+    finally:
+        executor.release(handle)
