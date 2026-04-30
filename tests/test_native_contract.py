@@ -1,3 +1,4 @@
+from underhfs.cuda import allocator_stats, empty_cache
 from underhfs.native import probe, status
 from underhfs.tensor import tensor
 
@@ -18,6 +19,7 @@ def test_native_contract_probe_when_available():
         assert result["cuda_tensor_mul_f32"] == [3.0, 8.0]
         assert result["cuda_tensor_sum_f32"] == [3.0]
         assert result["cuda_tensor_matmul_f32"] == [19.0, 22.0, 43.0, 50.0]
+        assert result["cuda_allocator"]["allocated_bytes"] > 0
 
 
 def test_tensor_uses_native_cpu_fast_path_when_available():
@@ -113,3 +115,19 @@ def test_cuda_matmul_backward_preserves_device_when_available():
     assert str(right.grad.device) == "cuda:0"
     assert left.grad.tolist() == [[11.0, 15.0], [11.0, 15.0]]
     assert right.grad.tolist() == [[4.0, 4.0], [6.0, 6.0]]
+
+
+def test_cuda_allocator_stats_and_empty_cache_when_available():
+    state = status()
+    if not state.cuda_enabled:
+        return
+    empty_cache()
+    before = allocator_stats()
+    out = tensor([1.0, 2.0]).cuda() + tensor([3.0, 4.0]).cuda()
+    assert out.tolist() == [4.0, 6.0]
+    after = allocator_stats()
+    assert after["allocated_bytes"] >= before["allocated_bytes"]
+    del out
+    empty_cache()
+    cleared = allocator_stats()
+    assert cleared["cached_bytes"] == 0

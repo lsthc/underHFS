@@ -2,8 +2,11 @@
 #include <cuda_runtime.h>
 
 #include <numeric>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "kernels.hpp"
@@ -89,6 +92,74 @@ cublasHandle_t cublas_handle() {
   return handle.get();
 }
 
+class CudaCachingAllocator {
+ public:
+  float* allocate(std::size_t bytes, const char* context) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto& bucket = free_blocks_[bytes];
+    if (!bucket.empty()) {
+      float* ptr = bucket.back();
+      bucket.pop_back();
+      cached_bytes_ -= bytes;
+      active_bytes_ += bytes;
+      ++reuses_;
+      return ptr;
+    }
+    float* ptr = nullptr;
+    check_cuda(cudaMalloc(&ptr, bytes), context);
+    active_bytes_ += bytes;
+    allocated_bytes_ += bytes;
+    ++allocations_;
+    return ptr;
+  }
+
+  void release(float* ptr, std::size_t bytes) {
+    if (ptr == nullptr || bytes == 0) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    active_bytes_ -= bytes;
+    cached_bytes_ += bytes;
+    free_blocks_[bytes].push_back(ptr);
+  }
+
+  void empty_cache() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [_, bucket] : free_blocks_) {
+      for (float* ptr : bucket) {
+        cudaFree(ptr);
+      }
+      bucket.clear();
+    }
+    cached_bytes_ = 0;
+  }
+
+  std::unordered_map<std::string, std::size_t> stats() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return {
+        {"active_bytes", active_bytes_},
+        {"cached_bytes", cached_bytes_},
+        {"allocated_bytes", allocated_bytes_},
+        {"allocations", allocations_},
+        {"reuses", reuses_},
+    };
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  std::unordered_map<std::size_t, std::vector<float*>> free_blocks_;
+  std::size_t active_bytes_ = 0;
+  std::size_t cached_bytes_ = 0;
+  std::size_t allocated_bytes_ = 0;
+  std::size_t allocations_ = 0;
+  std::size_t reuses_ = 0;
+};
+
+CudaCachingAllocator& cuda_allocator() {
+  static CudaCachingAllocator allocator;
+  return allocator;
+}
+
 }  // namespace
 
 CudaTensorF32::CudaTensorF32(const std::vector<float>& host, std::vector<std::size_t> shape)
@@ -98,12 +169,12 @@ CudaTensorF32::CudaTensorF32(const std::vector<float>& host, std::vector<std::si
   if (numel_ != host.size()) {
     throw std::invalid_argument("CudaTensorF32 host size does not match shape");
   }
-  check_cuda(cudaMalloc(&device_, numel_ * sizeof(float)), "CudaTensorF32 cudaMalloc");
+  device_ = cuda_allocator().allocate(numel_ * sizeof(float), "CudaTensorF32 cudaMalloc");
   try {
     check_cuda(cudaMemcpy(device_, host.data(), numel_ * sizeof(float), cudaMemcpyHostToDevice),
                "CudaTensorF32 host-to-device copy");
   } catch (...) {
-    cudaFree(device_);
+    cuda_allocator().release(device_, numel_ * sizeof(float));
     device_ = nullptr;
     throw;
   }
@@ -117,7 +188,7 @@ CudaTensorF32::CudaTensorF32(float* device, std::vector<std::size_t> shape)
 
 CudaTensorF32::~CudaTensorF32() {
   if (device_ != nullptr) {
-    cudaFree(device_);
+    cuda_allocator().release(device_, numel_ * sizeof(float));
   }
 }
 
@@ -130,7 +201,7 @@ CudaTensorF32::CudaTensorF32(CudaTensorF32&& other) noexcept
 CudaTensorF32& CudaTensorF32::operator=(CudaTensorF32&& other) noexcept {
   if (this != &other) {
     if (device_ != nullptr) {
-      cudaFree(device_);
+      cuda_allocator().release(device_, numel_ * sizeof(float));
     }
     device_ = other.device_;
     shape_ = std::move(other.shape_);
@@ -157,7 +228,7 @@ CudaTensorF32 CudaTensorF32::add(const CudaTensorF32& other) const {
     throw std::invalid_argument("CudaTensorF32 add requires identical shapes");
   }
   float* out = nullptr;
-  check_cuda(cudaMalloc(&out, numel_ * sizeof(float)), "CudaTensorF32 add cudaMalloc");
+  out = cuda_allocator().allocate(numel_ * sizeof(float), "CudaTensorF32 add cudaMalloc");
   const int n = static_cast<int>(numel_);
   const int block = 256;
   const int grid = (n + block - 1) / block;
@@ -166,7 +237,7 @@ CudaTensorF32 CudaTensorF32::add(const CudaTensorF32& other) const {
     check_cuda(cudaGetLastError(), "CudaTensorF32 add launch");
     check_cuda(cudaDeviceSynchronize(), "CudaTensorF32 add sync");
   } catch (...) {
-    cudaFree(out);
+    cuda_allocator().release(out, numel_ * sizeof(float));
     throw;
   }
   return CudaTensorF32(out, shape_);
@@ -177,7 +248,7 @@ CudaTensorF32 CudaTensorF32::mul(const CudaTensorF32& other) const {
     throw std::invalid_argument("CudaTensorF32 mul requires identical shapes");
   }
   float* out = nullptr;
-  check_cuda(cudaMalloc(&out, numel_ * sizeof(float)), "CudaTensorF32 mul cudaMalloc");
+  out = cuda_allocator().allocate(numel_ * sizeof(float), "CudaTensorF32 mul cudaMalloc");
   const int n = static_cast<int>(numel_);
   const int block = 256;
   const int grid = (n + block - 1) / block;
@@ -186,7 +257,7 @@ CudaTensorF32 CudaTensorF32::mul(const CudaTensorF32& other) const {
     check_cuda(cudaGetLastError(), "CudaTensorF32 mul launch");
     check_cuda(cudaDeviceSynchronize(), "CudaTensorF32 mul sync");
   } catch (...) {
-    cudaFree(out);
+    cuda_allocator().release(out, numel_ * sizeof(float));
     throw;
   }
   return CudaTensorF32(out, shape_);
@@ -206,7 +277,7 @@ CudaTensorF32 CudaTensorF32::matmul(const CudaTensorF32& other) const {
   std::vector<std::size_t> out_shape = {shape_[0], other.shape_[1]};
   const auto out_numel = static_cast<std::size_t>(m) * static_cast<std::size_t>(n);
   float* out = nullptr;
-  check_cuda(cudaMalloc(&out, out_numel * sizeof(float)), "CudaTensorF32 matmul cudaMalloc");
+  out = cuda_allocator().allocate(out_numel * sizeof(float), "CudaTensorF32 matmul cudaMalloc");
   try {
     const float alpha = 1.0f;
     const float beta = 0.0f;
@@ -216,7 +287,7 @@ CudaTensorF32 CudaTensorF32::matmul(const CudaTensorF32& other) const {
         "CudaTensorF32 matmul cublasSgemm");
     check_cuda(cudaDeviceSynchronize(), "CudaTensorF32 matmul sync");
   } catch (...) {
-    cudaFree(out);
+    cuda_allocator().release(out, out_numel * sizeof(float));
     throw;
   }
   return CudaTensorF32(out, out_shape);
@@ -229,31 +300,31 @@ CudaTensorF32 CudaTensorF32::sum() const {
   const int block = 256;
   const float* current = device_;
   int current_n = static_cast<int>(numel_);
-  std::vector<float*> temporaries;
+  std::vector<std::pair<float*, std::size_t>> temporaries;
   try {
     while (current_n > 1) {
       const int grid = (current_n + block * 2 - 1) / (block * 2);
       float* partials = nullptr;
-      check_cuda(cudaMalloc(&partials, static_cast<std::size_t>(grid) * sizeof(float)),
-                 "CudaTensorF32 sum partial cudaMalloc");
-      temporaries.push_back(partials);
+      const auto partial_bytes = static_cast<std::size_t>(grid) * sizeof(float);
+      partials = cuda_allocator().allocate(partial_bytes, "CudaTensorF32 sum partial cudaMalloc");
+      temporaries.emplace_back(partials, partial_bytes);
       underhfs_sum_blocks_f32<<<grid, block, block * sizeof(float)>>>(current, partials, current_n);
       check_cuda(cudaGetLastError(), "CudaTensorF32 sum launch");
       current = partials;
       current_n = grid;
     }
     float* out = nullptr;
-    check_cuda(cudaMalloc(&out, sizeof(float)), "CudaTensorF32 sum cudaMalloc");
+    out = cuda_allocator().allocate(sizeof(float), "CudaTensorF32 sum cudaMalloc");
     check_cuda(cudaMemcpy(out, current, sizeof(float), cudaMemcpyDeviceToDevice),
                "CudaTensorF32 sum device copy");
     check_cuda(cudaDeviceSynchronize(), "CudaTensorF32 sum sync");
-    for (float* temporary : temporaries) {
-      cudaFree(temporary);
+    for (auto [temporary, bytes] : temporaries) {
+      cuda_allocator().release(temporary, bytes);
     }
     return CudaTensorF32(out, {});
   } catch (...) {
-    for (float* temporary : temporaries) {
-      cudaFree(temporary);
+    for (auto [temporary, bytes] : temporaries) {
+      cuda_allocator().release(temporary, bytes);
     }
     throw;
   }
@@ -299,5 +370,11 @@ std::vector<float> cuda_add_f32_host(const std::vector<float>& left,
   cudaFree(d_out);
   return out;
 }
+
+std::unordered_map<std::string, std::size_t> cuda_allocator_stats() {
+  return cuda_allocator().stats();
+}
+
+void cuda_empty_cache() { cuda_allocator().empty_cache(); }
 
 }  // namespace underhfs

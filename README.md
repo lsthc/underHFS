@@ -64,6 +64,8 @@ external test and benchmark oracles.
   and CUDA Tensor add/matmul use the native GPU storage path.
 - CUDA matmul uses cuBLAS with a cached per-thread handle while preserving
   underHFS row-major tensor semantics.
+- CUDA storage now uses an exact-size caching allocator with stats and
+  `empty_cache()` hooks exposed through `underhfs.cuda`.
 
 ## Product Surface
 
