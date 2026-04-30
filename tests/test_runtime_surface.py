@@ -2,6 +2,7 @@ from underhfs.compile import CompilePolicy, compile
 from underhfs.cuda import MemoryPolicy, MemoryTier, RuntimePolicy
 from underhfs.data import DataLoader, TensorDataset
 from underhfs.distributed import DistributedDataParallel
+from underhfs.native import status
 from underhfs.nn import Linear
 from underhfs.serve import serve
 from underhfs.tensor import DType, tensor
@@ -34,9 +35,12 @@ def test_tensor_to_cpu_dtype_and_cuda_error():
     x = tensor([1.0, 2.0]).to(dtype=DType.FP16)
     assert x.dtype is DType.FP16
     assert str(x.cpu().device) == "cpu"
-    try:
-        x.cuda()
-    except RuntimeError as exc:
-        assert "native core is unavailable" in str(exc) or "built without CUDA support" in str(exc)
+    if status().cuda_enabled:
+        assert str(x.cuda().device) == "cuda:0"
     else:
-        raise AssertionError("cuda() should fail while CUDA backend is unavailable")
+        try:
+            x.cuda()
+        except RuntimeError as exc:
+            assert "native core is unavailable" in str(exc) or "built without CUDA support" in str(exc)
+        else:
+            raise AssertionError("cuda() should fail while CUDA backend is unavailable")

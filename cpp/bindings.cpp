@@ -2,6 +2,9 @@
 #include <pybind11/stl.h>
 
 #include "tensor_core.hpp"
+#ifdef UNDERHFS_WITH_CUDA
+#include "kernels.hpp"
+#endif
 
 namespace py = pybind11;
 
@@ -28,4 +31,7 @@ PYBIND11_MODULE(_core, m) {
 
   m.def("shape_numel", &underhfs::shape_numel);
   m.def("contiguous_strides", &underhfs::contiguous_strides);
+#ifdef UNDERHFS_WITH_CUDA
+  m.def("cuda_add_f32", &underhfs::cuda_add_f32_host);
+#endif
 }

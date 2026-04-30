@@ -3,6 +3,7 @@ from __future__ import annotations
 import platform
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from shutil import which
 from subprocess import run
 
@@ -39,7 +40,7 @@ class DoctorReport:
 
 def doctor() -> DoctorReport:
     native = native_status()
-    tools = {name: which(name) for name in ("git", "cmake", "ninja", "nvcc", "cl", "nvidia-smi")}
+    tools = {name: _find_tool(name) for name in ("git", "cmake", "ninja", "nvcc", "cl", "nvidia-smi")}
     warnings: list[str] = []
     if not native.available:
         warnings.append(f"native core unavailable: {native.reason}")
@@ -70,10 +71,30 @@ def doctor() -> DoctorReport:
     )
 
 
+def _find_tool(name: str) -> str | None:
+    found = which(name)
+    if found is not None:
+        return found
+    if name == "nvcc":
+        cuda_root = Path("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA")
+        if cuda_root.exists():
+            candidates = sorted(cuda_root.glob("v*/bin/nvcc.exe"), reverse=True)
+            if candidates:
+                return str(candidates[0])
+    if name == "cl":
+        vs_root = Path("C:/Program Files/Microsoft Visual Studio/2022")
+        if vs_root.exists():
+            candidates = sorted(vs_root.glob("*/VC/Tools/MSVC/*/bin/Hostx64/x64/cl.exe"), reverse=True)
+            if candidates:
+                return str(candidates[0])
+    return None
+
+
 def nvidia_smi_summary() -> str | None:
-    if which("nvidia-smi") is None:
+    nvidia_smi = _find_tool("nvidia-smi")
+    if nvidia_smi is None:
         return None
-    result = run(["nvidia-smi"], capture_output=True, text=True, check=False)
+    result = run([nvidia_smi], capture_output=True, text=True, check=False)
     if result.returncode != 0:
         return result.stderr.strip()
     return result.stdout.strip()

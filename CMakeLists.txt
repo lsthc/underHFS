@@ -7,6 +7,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(UNDERHFS_WITH_CUDA AND NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+  set(CMAKE_CUDA_ARCHITECTURES 89)
+endif()
+
 find_package(pybind11 CONFIG REQUIRED)
 
 pybind11_add_module(_core cpp/bindings.cpp cpp/tensor_core.cpp)
@@ -17,6 +21,7 @@ if(UNDERHFS_WITH_CUDA)
   enable_language(CUDA)
   find_package(CUDAToolkit REQUIRED)
   target_sources(_core PRIVATE cuda/kernels.cu)
+  target_include_directories(_core PRIVATE cuda)
   target_link_libraries(_core PRIVATE CUDA::cudart CUDA::cublas)
   target_compile_definitions(_core PRIVATE UNDERHFS_WITH_CUDA=1)
 endif()

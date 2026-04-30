@@ -9,11 +9,9 @@
 - Ninja, optional when using the Visual Studio CMake generator
 - CUDA Toolkit 13.x for native CUDA builds
 
-The current machine has Python 3.13.12, Git, CMake, and Visual Studio Build
-Tools. The native CPU `_core` extension builds successfully through
-`scikit-build-core` and pybind11. CUDA Toolkit was not found under the standard
-installation path, and `nvcc` and `ninja` were not found on `PATH` during
-implementation.
+The current machine has Python 3.13.12, Git, CMake, Visual Studio Build Tools,
+Ninja, and CUDA Toolkit 13.2. The native `_core` extension builds successfully
+through `scikit-build-core` and pybind11 with CUDA enabled.
 
 ## Python fallback development
 
@@ -44,4 +42,11 @@ CUDA is opt-in at CMake level:
 ```powershell
 nvcc --version
 python -m pip install -e . --config-settings=cmake.define.UNDERHFS_WITH_CUDA=ON
+```
+
+On Windows, the repo includes a helper for the current Visual Studio Enterprise
+and CUDA 13.2 layout:
+
+```powershell
+scripts\build_cuda_editable.bat
 ```

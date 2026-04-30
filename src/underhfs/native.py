@@ -34,9 +34,10 @@ def probe() -> dict[str, Any]:
     right = core.TensorCore([5.0, 6.0, 7.0, 8.0], [2, 2])
     added = left.add(right)
     product = left.matmul(right)
-    return {
+    cuda_enabled = bool(getattr(core, "cuda_enabled", False))
+    result = {
         "version": getattr(core, "__version__", "unknown"),
-        "cuda_enabled": bool(getattr(core, "cuda_enabled", False)),
+        "cuda_enabled": cuda_enabled,
         "numel": left.numel(),
         "shape": list(left.shape),
         "strides": list(left.strides),
@@ -44,3 +45,6 @@ def probe() -> dict[str, Any]:
         "matmul": list(product.storage),
         "sum": list(product.sum().storage),
     }
+    if cuda_enabled and hasattr(core, "cuda_add_f32"):
+        result["cuda_add_f32"] = list(core.cuda_add_f32([1.0, 2.0], [3.0, 4.0]))
+    return result

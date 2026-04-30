@@ -53,6 +53,7 @@ external test and benchmark oracles.
   matmul, and sum once `_core` is built.
 - Python Tensor CPU fast paths call native `_core` for dense fp32 add, mul,
   matmul, and sum when available.
+- CUDA-enabled native builds expose and probe a real GPU `cuda_add_f32` kernel.
 
 ## Product Surface
 
@@ -115,9 +116,8 @@ Required tools:
 - CUDA Toolkit 13.x
 
 On this machine, Python 3.13.12, Git, CMake, Visual Studio Build Tools,
-pybind11, and scikit-build-core are present. The native CPU `_core` extension
-builds and probes successfully. CUDA Toolkit `nvcc` and Ninja still need to be
-installed or added to `PATH` before native CUDA builds can run. See
+pybind11, scikit-build-core, Ninja, and CUDA Toolkit 13.2 are present. The
+native `_core` extension builds and probes successfully with CUDA enabled. See
 `docs/build.md`.
 
 ## Design Promise

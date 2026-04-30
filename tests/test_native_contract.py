@@ -12,6 +12,8 @@ def test_native_contract_probe_when_available():
     assert result["add"] == [6.0, 8.0, 10.0, 12.0]
     assert result["matmul"] == [19.0, 22.0, 43.0, 50.0]
     assert result["sum"] == [134.0]
+    if result["cuda_enabled"]:
+        assert result["cuda_add_f32"] == [4.0, 6.0]
 
 
 def test_tensor_uses_native_cpu_fast_path_when_available():
