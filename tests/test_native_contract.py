@@ -59,3 +59,29 @@ def test_tensor_uses_native_cuda_matmul_when_available():
     assert out.backend == "native_cuda"
     assert str(out.device) == "cuda:0"
     assert out.tolist() == [[19.0, 22.0], [43.0, 50.0]]
+
+
+def test_cuda_scalar_ops_preserve_device_when_available():
+    state = status()
+    if not state.cuda_enabled:
+        return
+    out = tensor([1.0, 2.0]).cuda() + 3.0
+    assert str(out.device) == "cuda:0"
+    assert out.tolist() == [4.0, 5.0]
+
+
+def test_cuda_matmul_backward_preserves_device_when_available():
+    state = status()
+    if not state.cuda_enabled:
+        return
+    left = tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True).cuda()
+    right = tensor([[5.0, 6.0], [7.0, 8.0]], requires_grad=True).cuda()
+    loss = (left @ right).sum()
+    assert str(loss.device) == "cuda:0"
+    loss.backward()
+    assert left.grad is not None
+    assert right.grad is not None
+    assert str(left.grad.device) == "cuda:0"
+    assert str(right.grad.device) == "cuda:0"
+    assert left.grad.tolist() == [[11.0, 15.0], [11.0, 15.0]]
+    assert right.grad.tolist() == [[4.0, 4.0], [6.0, 6.0]]

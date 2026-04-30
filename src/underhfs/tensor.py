@@ -125,7 +125,7 @@ def _broadcast_index(index: tuple[int, ...], shape: tuple[int, ...]) -> tuple[in
 def _unbroadcast(grad: Tensor, shape: tuple[int, ...]) -> Tensor:
     if grad.shape == shape:
         return grad
-    out = zeros(shape)
+    out = zeros(shape, dtype=grad.dtype, device=grad.device, layout=grad.layout)
     for idx in _iter_indices(grad.shape):
         out._add_at(_broadcast_index(idx, shape), grad._value_at(idx))
     return out
@@ -289,7 +289,9 @@ class Tensor:
         self._storage[self._offset(index)] += value
 
     def _ensure_tensor(self, other: Any) -> Tensor:
-        return other if isinstance(other, Tensor) else tensor(other)
+        if isinstance(other, Tensor):
+            return other
+        return tensor(other, dtype=self.dtype, device=self.device, layout=self.layout)
 
     def _native_cpu_eligible(self) -> bool:
         return self.device.kind == "cpu" and self.layout is Layout.DENSE and self.dtype is DType.FP32
@@ -350,7 +352,9 @@ class Tensor:
                     [0.0] * self.numel(),
                     shape=self.shape,
                     requires_grad=self.requires_grad or rhs.requires_grad,
+                    dtype=self.dtype,
                     device=self.device,
+                    layout=self.layout,
                     _children=(self, rhs),
                     _op=op,
                 )
@@ -425,6 +429,9 @@ class Tensor:
                 values,
                 shape=shape,
                 requires_grad=self.requires_grad or rhs.requires_grad,
+                dtype=self.dtype,
+                device=self.device,
+                layout=self.layout,
                 _children=(self, rhs),
                 _op=op,
             )
@@ -464,7 +471,7 @@ class Tensor:
         return self._binary(other, "sub", lambda a, b: a - b)
 
     def __rsub__(self, other: Any) -> Tensor:
-        return tensor(other) - self
+        return tensor(other, dtype=self.dtype, device=self.device, layout=self.layout) - self
 
     def __mul__(self, other: Any) -> Tensor:
         return self._binary(other, "mul", lambda a, b: a * b)
@@ -476,14 +483,23 @@ class Tensor:
         return self._binary(other, "div", lambda a, b: a / b)
 
     def __rtruediv__(self, other: Any) -> Tensor:
-        return tensor(other) / self
+        return tensor(other, dtype=self.dtype, device=self.device, layout=self.layout) / self
 
     def __neg__(self) -> Tensor:
         return self * -1.0
 
     def __pow__(self, power: float) -> Tensor:
         values = [value**power for value in self._storage]
-        out = Tensor(values, shape=self.shape, requires_grad=self.requires_grad, _children=(self,), _op="pow")
+        out = Tensor(
+            values,
+            shape=self.shape,
+            requires_grad=self.requires_grad,
+            dtype=self.dtype,
+            device=self.device,
+            layout=self.layout,
+            _children=(self,),
+            _op="pow",
+        )
 
         def backward() -> None:
             if self.requires_grad and out.grad is not None:
@@ -512,7 +528,9 @@ class Tensor:
                     [0.0] * (m * n),
                     shape=(m, n),
                     requires_grad=self.requires_grad or rhs.requires_grad,
+                    dtype=self.dtype,
                     device=self.device,
+                    layout=self.layout,
                     _children=(self, rhs),
                     _op="matmul",
                 )
@@ -540,6 +558,9 @@ class Tensor:
                 values,
                 shape=(m, n),
                 requires_grad=self.requires_grad or rhs.requires_grad,
+                dtype=self.dtype,
+                device=self.device,
+                layout=self.layout,
                 _children=(self, rhs),
                 _op="matmul",
             )
@@ -578,11 +599,21 @@ class Tensor:
             except Exception:
                 out = None
         if out is None:
-            out = Tensor(sum(self._storage), requires_grad=self.requires_grad, _children=(self,), _op="sum")
+            out = Tensor(
+                sum(self._storage),
+                requires_grad=self.requires_grad,
+                dtype=self.dtype,
+                device=self.device,
+                layout=self.layout,
+                _children=(self,),
+                _op="sum",
+            )
 
         def backward() -> None:
             if self.requires_grad and out.grad is not None:
-                self._accumulate_grad(ones(self.shape) * out.grad)
+                self._accumulate_grad(
+                    ones(self.shape, dtype=self.dtype, device=self.device, layout=self.layout) * out.grad
+                )
 
         out._backward = backward
         return out
@@ -592,11 +623,26 @@ class Tensor:
 
     def relu(self) -> Tensor:
         values = [max(0.0, value) for value in self._storage]
-        out = Tensor(values, shape=self.shape, requires_grad=self.requires_grad, _children=(self,), _op="relu")
+        out = Tensor(
+            values,
+            shape=self.shape,
+            requires_grad=self.requires_grad,
+            dtype=self.dtype,
+            device=self.device,
+            layout=self.layout,
+            _children=(self,),
+            _op="relu",
+        )
 
         def backward() -> None:
             if self.requires_grad and out.grad is not None:
-                mask = Tensor([1.0 if value > 0 else 0.0 for value in self._storage], shape=self.shape)
+                mask = Tensor(
+                    [1.0 if value > 0 else 0.0 for value in self._storage],
+                    shape=self.shape,
+                    dtype=self.dtype,
+                    device=self.device,
+                    layout=self.layout,
+                )
                 self._accumulate_grad(out.grad * mask)
 
         out._backward = backward
@@ -604,11 +650,26 @@ class Tensor:
 
     def tanh(self) -> Tensor:
         values = [tanh(value) for value in self._storage]
-        out = Tensor(values, shape=self.shape, requires_grad=self.requires_grad, _children=(self,), _op="tanh")
+        out = Tensor(
+            values,
+            shape=self.shape,
+            requires_grad=self.requires_grad,
+            dtype=self.dtype,
+            device=self.device,
+            layout=self.layout,
+            _children=(self,),
+            _op="tanh",
+        )
 
         def backward() -> None:
             if self.requires_grad and out.grad is not None:
-                grad = Tensor([1.0 - value * value for value in out._storage], shape=out.shape)
+                grad = Tensor(
+                    [1.0 - value * value for value in out._storage],
+                    shape=out.shape,
+                    dtype=self.dtype,
+                    device=self.device,
+                    layout=self.layout,
+                )
                 self._accumulate_grad(out.grad * grad)
 
         out._backward = backward
@@ -616,7 +677,16 @@ class Tensor:
 
     def exp(self) -> Tensor:
         values = [exp(value) for value in self._storage]
-        out = Tensor(values, shape=self.shape, requires_grad=self.requires_grad, _children=(self,), _op="exp")
+        out = Tensor(
+            values,
+            shape=self.shape,
+            requires_grad=self.requires_grad,
+            dtype=self.dtype,
+            device=self.device,
+            layout=self.layout,
+            _children=(self,),
+            _op="exp",
+        )
 
         def backward() -> None:
             if self.requires_grad and out.grad is not None:
@@ -627,7 +697,16 @@ class Tensor:
 
     def log(self) -> Tensor:
         values = [log(value) for value in self._storage]
-        out = Tensor(values, shape=self.shape, requires_grad=self.requires_grad, _children=(self,), _op="log")
+        out = Tensor(
+            values,
+            shape=self.shape,
+            requires_grad=self.requires_grad,
+            dtype=self.dtype,
+            device=self.device,
+            layout=self.layout,
+            _children=(self,),
+            _op="log",
+        )
 
         def backward() -> None:
             if self.requires_grad and out.grad is not None:
@@ -644,7 +723,16 @@ class Tensor:
             raise ValueError("transpose fallback currently supports 2D tensors")
         rows, cols = self.shape
         values = [self._value_at((i, j)) for j in range(cols) for i in range(rows)]
-        out = Tensor(values, shape=(cols, rows), requires_grad=self.requires_grad, _children=(self,), _op="transpose")
+        out = Tensor(
+            values,
+            shape=(cols, rows),
+            requires_grad=self.requires_grad,
+            dtype=self.dtype,
+            device=self.device,
+            layout=self.layout,
+            _children=(self,),
+            _op="transpose",
+        )
 
         def backward() -> None:
             if self.requires_grad and out.grad is not None:
@@ -662,7 +750,16 @@ class Tensor:
             shape = tuple(shape[0])  # type: ignore[assignment]
         if _prod(shape) != self.numel():
             raise ValueError(f"cannot reshape {self.shape} to {shape}")
-        out = Tensor(list(self._storage), shape=shape, requires_grad=self.requires_grad, _children=(self,), _op="reshape")
+        out = Tensor(
+            list(self._storage),
+            shape=shape,
+            requires_grad=self.requires_grad,
+            dtype=self.dtype,
+            device=self.device,
+            layout=self.layout,
+            _children=(self,),
+            _op="reshape",
+        )
 
         def backward() -> None:
             if self.requires_grad and out.grad is not None:
@@ -680,6 +777,9 @@ class Tensor:
                 [v / denom for v in exps],
                 shape=self.shape,
                 requires_grad=self.requires_grad,
+                dtype=self.dtype,
+                device=self.device,
+                layout=self.layout,
                 _children=(self,),
                 _op="softmax",
             )
@@ -696,6 +796,9 @@ class Tensor:
                 values,
                 shape=self.shape,
                 requires_grad=self.requires_grad,
+                dtype=self.dtype,
+                device=self.device,
+                layout=self.layout,
                 _children=(self,),
                 _op="softmax",
             )
@@ -705,7 +808,7 @@ class Tensor:
         def backward() -> None:
             if out.grad is None or not self.requires_grad:
                 return
-            grad = zeros(self.shape)
+            grad = zeros(self.shape, dtype=self.dtype, device=self.device, layout=self.layout)
             if self.ndim == 1:
                 dot = sum(out.grad._value_at((j,)) * out._value_at((j,)) for j in range(self.shape[0]))
                 for i in range(self.shape[0]):
@@ -731,7 +834,7 @@ class Tensor:
         if grad is None:
             if self.numel() != 1:
                 raise ValueError("grad must be provided for non-scalar tensors")
-            grad = tensor(1.0)
+            grad = tensor(1.0, dtype=self.dtype, device=self.device, layout=self.layout)
         self.grad = grad
         topo: list[Tensor] = []
         visited: set[Tensor] = set()
