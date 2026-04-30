@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from functools import wraps
 from typing import Any, Callable, TypeVar
@@ -22,6 +22,9 @@ class CompilePolicy:
     fusion: tuple[FusionKind, ...] = field(
         default_factory=lambda: (FusionKind.ELEMENTWISE, FusionKind.REDUCTION, FusionKind.ATTENTION)
     )
+
+
+GuardSignature = tuple[tuple[str, tuple[int, ...], str, str, str], ...]
 
 
 @dataclass
@@ -88,11 +91,31 @@ class FusionGroup:
 
 
 @dataclass(frozen=True)
+class CompileCacheInfo:
+    hits: int = 0
+    misses: int = 0
+    specializations: int = 0
+
+    def to_dict(self) -> dict[str, int]:
+        return self.__dict__
+
+
+@dataclass(frozen=True)
+class CompileCacheEntry:
+    signature: GuardSignature
+    report: CompileReport
+    hits: int = 0
+
+
+@dataclass(frozen=True)
 class CompileReport:
     policy: CompilePolicy
     graph: GraphIR
     guards: tuple[Guard, ...]
     fusion_groups: tuple[FusionGroup, ...]
+    specialization_key: GuardSignature = ()
+    cache_hit: bool = False
+    cache_info: CompileCacheInfo = field(default_factory=CompileCacheInfo)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -105,6 +128,18 @@ class CompileReport:
             "graph": self.graph.to_dict(),
             "guards": [guard.to_dict() for guard in self.guards],
             "fusion_groups": [group.to_dict() for group in self.fusion_groups],
+            "specialization_key": [
+                {
+                    "name": name,
+                    "shape": shape,
+                    "dtype": dtype,
+                    "device": device,
+                    "layout": layout,
+                }
+                for name, shape, dtype, device, layout in self.specialization_key
+            ],
+            "cache_hit": self.cache_hit,
+            "cache_info": self.cache_info.to_dict(),
         }
 
 
@@ -112,16 +147,54 @@ def compile(function: F | None = None, *, policy: CompilePolicy | None = None):
     active_policy = policy or CompilePolicy()
 
     def decorate(fn: F) -> F:
+        cache: dict[GuardSignature, CompileCacheEntry] = {}
+        hits = 0
+        misses = 0
+
+        def current_cache_info() -> CompileCacheInfo:
+            return CompileCacheInfo(hits=hits, misses=misses, specializations=len(cache))
+
         @wraps(fn)
         def run(*args, **kwargs):
+            nonlocal hits, misses
+            signature = _guard_signature(args, kwargs)
+            if active_policy.enabled and active_policy.guard_specialization and signature in cache:
+                result = fn(*args, **kwargs)
+                entry = cache[signature]
+                hits += 1
+                cache[signature] = replace(entry, hits=entry.hits + 1)
+                report = replace(
+                    entry.report,
+                    cache_hit=True,
+                    cache_info=current_cache_info(),
+                )
+                setattr(run, "_underhfs_last_compile_report", report)
+                setattr(run, "_underhfs_last_graph", report.graph)
+                return result
+
             result = fn(*args, **kwargs)
+            misses += 1
             report = analyze_execution(result, args=args, kwargs=kwargs, policy=active_policy)
+            specializations = (
+                len(cache) + 1
+                if active_policy.enabled and active_policy.guard_specialization
+                else len(cache)
+            )
+            report = replace(
+                report,
+                specialization_key=signature,
+                cache_hit=False,
+                cache_info=CompileCacheInfo(hits=hits, misses=misses, specializations=specializations),
+            )
+            if active_policy.enabled and active_policy.guard_specialization:
+                cache[signature] = CompileCacheEntry(signature=signature, report=report)
             setattr(run, "_underhfs_last_compile_report", report)
             setattr(run, "_underhfs_last_graph", report.graph)
             return result
 
         setattr(run, "_underhfs_compile_policy", active_policy)
         setattr(run, "_underhfs_last_compile_report", None)
+        setattr(run, "_underhfs_compile_cache", cache)
         return run  # type: ignore[return-value]
 
     if function is None:
@@ -168,7 +241,13 @@ def analyze_execution(
 
     guards = _guards(args, kwargs or {})
     fusion_groups = _fusion_groups(graph, active_policy)
-    return CompileReport(active_policy, graph, guards, fusion_groups)
+    return CompileReport(
+        active_policy,
+        graph,
+        guards,
+        fusion_groups,
+        specialization_key=_guards_to_signature(guards),
+    )
 
 
 def explain(fn: Callable[..., Any], *args: Any, policy: CompilePolicy | None = None, **kwargs: Any) -> CompileReport:
@@ -206,6 +285,14 @@ def _guards(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[Guard, ...]:
         if _looks_like_tensor(value):
             guards.append(_guard(name, value))
     return tuple(guards)
+
+
+def _guard_signature(args: tuple[Any, ...], kwargs: dict[str, Any]) -> GuardSignature:
+    return _guards_to_signature(_guards(args, dict(sorted(kwargs.items()))))
+
+
+def _guards_to_signature(guards: tuple[Guard, ...]) -> GuardSignature:
+    return tuple((guard.name, guard.shape, guard.dtype, guard.device, guard.layout) for guard in guards)
 
 
 def _guard(name: str, value: Any) -> Guard:

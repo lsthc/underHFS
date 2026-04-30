@@ -42,6 +42,30 @@ def test_compile_explain_returns_serializable_report():
     assert payload["graph"]["nodes"]
 
 
+def test_compile_guard_specialization_cache_tracks_hits_and_misses():
+    @compile(policy=CompilePolicy(enabled=True, guard_specialization=True))
+    def fn(x):
+        return (x + x).sum()
+
+    first = fn(tensor([1.0, 2.0]))
+    first_report = fn._underhfs_last_compile_report
+    second = fn(tensor([3.0, 4.0]))
+    second_report = fn._underhfs_last_compile_report
+    third = fn(tensor([[1.0], [2.0]]))
+    third_report = fn._underhfs_last_compile_report
+
+    assert first.item() == 6.0
+    assert second.item() == 14.0
+    assert third.item() == 6.0
+    assert first_report.cache_hit is False
+    assert second_report.cache_hit is True
+    assert second_report.cache_info.hits == 1
+    assert second_report.cache_info.misses == 1
+    assert second_report.cache_info.specializations == 1
+    assert third_report.cache_hit is False
+    assert third_report.cache_info.specializations == 2
+
+
 def test_data_ddp_and_python_server_surfaces():
     loader = DataLoader(TensorDataset([1, 2, 3]), batch_size=2)
     assert list(loader) == [[1, 2], [3]]

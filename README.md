@@ -63,6 +63,8 @@ external test and benchmark oracles.
   `/predict` endpoints in addition to the local Python server.
 - `underhfs.compile` now records eager execution into inspectable GraphIR with
   input guards and initial elementwise/reduction/attention fusion candidates.
+- Compile guards now maintain per-shape/dtype/device specialization cache
+  stats, making repeated eager calls visibly reuse compiler analysis.
 - CMake + pybind11 native extension scaffold and CUDA kernel scaffold gated
   behind `UNDERHFS_WITH_CUDA`.
 - Native C++ `TensorCore` contract for shape validation, strides, add, mul,
