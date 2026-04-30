@@ -49,6 +49,8 @@ external test and benchmark oracles.
 - Hierarchical memory planner for VRAM/RAM/NVMe placement policy simulation.
 - CUDA diagnostics report device memory and derive initial VRAM/RAM planner
   budgets from the local machine.
+- CLI microbenchmarks report CPU and CUDA add/matmul throughput with backend
+  labels, so performance work has a measurable baseline.
 - CMake + pybind11 native extension scaffold and CUDA kernel scaffold gated
   behind `UNDERHFS_WITH_CUDA`.
 - Native C++ `TensorCore` contract for shape validation, strides, add, mul,

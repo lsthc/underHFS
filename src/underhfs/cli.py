@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from underhfs import __version__
+from underhfs.benchmarks import run_microbenchmarks
 from underhfs.cuda import device_count, devices, is_available, memory_budgets
 from underhfs.datasets import inspect_text_dataset, write_sample_text_dataset
 from underhfs.diagnostics import doctor
@@ -37,7 +38,15 @@ def _cmd_bench(args: argparse.Namespace) -> int:
         "memory_budgets": {tier.value: size for tier, size in memory_budgets().items()},
         "native_core": native.available,
         "native_reason": native.reason,
-        "note": "native CUDA microbenchmarks are pending CUDA Toolkit installation",
+        "results": [
+            result.to_dict()
+            for result in run_microbenchmarks(
+                size=args.size,
+                iterations=args.iterations,
+                warmup=args.warmup,
+                include_cuda=not args.no_cuda,
+            )
+        ],
     }
     print(json.dumps(payload, indent=2))
     return 0
@@ -56,6 +65,7 @@ def _cmd_test(_: argparse.Namespace) -> int:
         "tests.test_losses_serialization",
         "tests.test_transformer_lm",
         "tests.test_cli_train",
+        "tests.test_benchmarks",
         "tests.test_text_generation",
         "tests.test_cli_fullstack",
         "tests.test_runtime_memory_planner",
@@ -198,6 +208,10 @@ def main(argv: list[str] | None = None) -> int:
     init.set_defaults(func=_cmd_init)
 
     bench = sub.add_parser("bench")
+    bench.add_argument("--size", type=int, default=32)
+    bench.add_argument("--iterations", type=int, default=20)
+    bench.add_argument("--warmup", type=int, default=3)
+    bench.add_argument("--no-cuda", action="store_true")
     bench.set_defaults(func=_cmd_bench)
 
     doctor_cmd = sub.add_parser("doctor")
