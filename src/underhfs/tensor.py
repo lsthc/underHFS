@@ -168,6 +168,7 @@ class Tensor:
         self._op = _op
         self._backward: Callable[[], None] = lambda: None
         self._version = 0
+        self.backend = "python"
 
     @property
     def ndim(self) -> int:
@@ -286,6 +287,52 @@ class Tensor:
     def _ensure_tensor(self, other: Any) -> Tensor:
         return other if isinstance(other, Tensor) else tensor(other)
 
+    def _native_cpu_eligible(self) -> bool:
+        return self.device.kind == "cpu" and self.layout is Layout.DENSE and self.dtype is DType.FP32
+
+    def _to_native_core(self):
+        from underhfs.native import require_native
+
+        core = require_native()
+        return core.TensorCore(list(self._storage), list(self.shape))
+
+    @classmethod
+    def _from_native_core(
+        cls,
+        native_tensor,
+        *,
+        requires_grad: bool = False,
+        children: Iterable[Tensor] = (),
+        op: str = "",
+    ) -> Tensor:
+        out = cls(
+            list(native_tensor.storage),
+            shape=tuple(native_tensor.shape),
+            requires_grad=requires_grad,
+            _children=children,
+            _op=op,
+        )
+        out.backend = "native_cpu"
+        return out
+
+    def _try_native_binary(self, rhs: Tensor, op: str) -> Tensor | None:
+        if op not in {"add", "mul"}:
+            return None
+        if self.shape != rhs.shape or not self._native_cpu_eligible() or not rhs._native_cpu_eligible():
+            return None
+        try:
+            left_native = self._to_native_core()
+            right_native = rhs._to_native_core()
+            native_out = left_native.add(right_native) if op == "add" else left_native.mul(right_native)
+        except Exception:
+            return None
+        return Tensor._from_native_core(
+            native_out,
+            requires_grad=self.requires_grad or rhs.requires_grad,
+            children=(self, rhs),
+            op=op,
+        )
+
     def _check_compatible(self, other: Tensor, op: str) -> None:
         if self.device != other.device:
             raise RuntimeError(
@@ -323,11 +370,22 @@ class Tensor:
         rhs = self._ensure_tensor(other)
         self._check_compatible(rhs, op)
         shape = _broadcast_shape(self.shape, rhs.shape)
-        values = [
-            fn(self._value_at(_broadcast_index(idx, self.shape)), rhs._value_at(_broadcast_index(idx, rhs.shape)))
-            for idx in _iter_indices(shape)
-        ]
-        out = Tensor(values, shape=shape, requires_grad=self.requires_grad or rhs.requires_grad, _children=(self, rhs), _op=op)
+        out = self._try_native_binary(rhs, op)
+        if out is None:
+            values = [
+                fn(
+                    self._value_at(_broadcast_index(idx, self.shape)),
+                    rhs._value_at(_broadcast_index(idx, rhs.shape)),
+                )
+                for idx in _iter_indices(shape)
+            ]
+            out = Tensor(
+                values,
+                shape=shape,
+                requires_grad=self.requires_grad or rhs.requires_grad,
+                _children=(self, rhs),
+                _op=op,
+            )
 
         def backward() -> None:
             if out.grad is None:
@@ -401,11 +459,29 @@ class Tensor:
         k2, n = rhs.shape
         if k != k2:
             raise ValueError(f"matmul shape mismatch: {self.shape} @ {rhs.shape}")
-        values = []
-        for i in range(m):
-            for j in range(n):
-                values.append(sum(self._value_at((i, p)) * rhs._value_at((p, j)) for p in range(k)))
-        out = Tensor(values, shape=(m, n), requires_grad=self.requires_grad or rhs.requires_grad, _children=(self, rhs), _op="matmul")
+        out = None
+        if self._native_cpu_eligible() and rhs._native_cpu_eligible():
+            try:
+                out = Tensor._from_native_core(
+                    self._to_native_core().matmul(rhs._to_native_core()),
+                    requires_grad=self.requires_grad or rhs.requires_grad,
+                    children=(self, rhs),
+                    op="matmul",
+                )
+            except Exception:
+                out = None
+        if out is None:
+            values = []
+            for i in range(m):
+                for j in range(n):
+                    values.append(sum(self._value_at((i, p)) * rhs._value_at((p, j)) for p in range(k)))
+            out = Tensor(
+                values,
+                shape=(m, n),
+                requires_grad=self.requires_grad or rhs.requires_grad,
+                _children=(self, rhs),
+                _op="matmul",
+            )
 
         def backward() -> None:
             if out.grad is None:
@@ -427,7 +503,19 @@ class Tensor:
         return self
 
     def sum(self) -> Tensor:
-        out = Tensor(sum(self._storage), requires_grad=self.requires_grad, _children=(self,), _op="sum")
+        out = None
+        if self._native_cpu_eligible():
+            try:
+                out = Tensor._from_native_core(
+                    self._to_native_core().sum(),
+                    requires_grad=self.requires_grad,
+                    children=(self,),
+                    op="sum",
+                )
+            except Exception:
+                out = None
+        if out is None:
+            out = Tensor(sum(self._storage), requires_grad=self.requires_grad, _children=(self,), _op="sum")
 
         def backward() -> None:
             if self.requires_grad and out.grad is not None:

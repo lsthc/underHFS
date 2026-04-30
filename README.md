@@ -51,6 +51,8 @@ external test and benchmark oracles.
   behind `UNDERHFS_WITH_CUDA`.
 - Native C++ `TensorCore` contract for shape validation, strides, add, mul,
   matmul, and sum once `_core` is built.
+- Python Tensor CPU fast paths call native `_core` for dense fp32 add, mul,
+  matmul, and sum when available.
 
 ## Product Surface
 

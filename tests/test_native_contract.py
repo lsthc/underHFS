@@ -1,4 +1,5 @@
 from underhfs.native import probe, status
+from underhfs.tensor import tensor
 
 
 def test_native_contract_probe_when_available():
@@ -11,3 +12,22 @@ def test_native_contract_probe_when_available():
     assert result["add"] == [6.0, 8.0, 10.0, 12.0]
     assert result["matmul"] == [19.0, 22.0, 43.0, 50.0]
     assert result["sum"] == [134.0]
+
+
+def test_tensor_uses_native_cpu_fast_path_when_available():
+    if not status().available:
+        return
+    left = tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+    right = tensor([[5.0, 6.0], [7.0, 8.0]], requires_grad=True)
+    added = left + right
+    multiplied = left * right
+    product = left @ right
+    total = product.sum()
+    assert added.backend == "native_cpu"
+    assert multiplied.backend == "native_cpu"
+    assert product.backend == "native_cpu"
+    assert total.backend == "native_cpu"
+    assert product.tolist() == [[19.0, 22.0], [43.0, 50.0]]
+    total.backward()
+    assert left.grad is not None
+    assert right.grad is not None
