@@ -297,7 +297,14 @@ class Tensor:
         return self.device.kind == "cpu" and self.layout is Layout.DENSE and self.dtype is DType.FP32
 
     def _native_cuda_eligible(self) -> bool:
-        return self.device.kind == "cuda" and self.layout is Layout.DENSE and self.dtype is DType.FP32
+        return (
+            self.device.kind == "cuda"
+            and self.layout is Layout.DENSE
+            and self.dtype in {DType.FP32, DType.FP16, DType.BF16}
+        )
+
+    def _native_cuda_matmul_eligible(self) -> bool:
+        return self._native_cuda_eligible() and self.dtype is DType.FP32
 
     def _attach_cuda_storage(self) -> None:
         if not self._native_cuda_eligible():
@@ -305,9 +312,16 @@ class Tensor:
         from underhfs.native import require_native
 
         core = require_native()
-        if not bool(getattr(core, "cuda_enabled", False)) or not hasattr(core, "CudaTensorF32"):
+        if not bool(getattr(core, "cuda_enabled", False)):
             raise RuntimeError("CUDA Tensor storage is unavailable in this underHFS native build")
-        self._native_cuda = core.CudaTensorF32([float(value) for value in self._storage], list(self.shape))
+        storage_class = {
+            DType.FP32: "CudaTensorF32",
+            DType.FP16: "CudaTensorF16",
+            DType.BF16: "CudaTensorBF16",
+        }[self.dtype]
+        if not hasattr(core, storage_class):
+            raise RuntimeError(f"{self.dtype.value} CUDA Tensor storage is unavailable in this underHFS native build")
+        self._native_cuda = getattr(core, storage_class)([float(value) for value in self._storage], list(self.shape))
         self.backend = "native_cuda"
 
     def _sync_from_cuda(self) -> None:
@@ -342,7 +356,12 @@ class Tensor:
     def _try_native_binary(self, rhs: Tensor, op: str) -> Tensor | None:
         if op not in {"add", "mul"}:
             return None
-        if self.shape == rhs.shape and self._native_cuda_eligible() and rhs._native_cuda_eligible():
+        if (
+            self.shape == rhs.shape
+            and self.dtype == rhs.dtype
+            and self._native_cuda_eligible()
+            and rhs._native_cuda_eligible()
+        ):
             try:
                 if self._native_cuda is None:
                     self._attach_cuda_storage()
@@ -521,7 +540,7 @@ class Tensor:
         if k != k2:
             raise ValueError(f"matmul shape mismatch: {self.shape} @ {rhs.shape}")
         out = None
-        if self._native_cuda_eligible() and rhs._native_cuda_eligible():
+        if self._native_cuda_matmul_eligible() and rhs._native_cuda_matmul_eligible():
             try:
                 if self._native_cuda is None:
                     self._attach_cuda_storage()
@@ -591,7 +610,7 @@ class Tensor:
 
     def sum(self) -> Tensor:
         out = None
-        if self._native_cuda_eligible():
+        if self._native_cuda_matmul_eligible():
             try:
                 if self._native_cuda is None:
                     self._attach_cuda_storage()

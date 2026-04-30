@@ -46,5 +46,19 @@ PYBIND11_MODULE(_core, m) {
       .def("mul", &underhfs::CudaTensorF32::mul)
       .def("matmul", &underhfs::CudaTensorF32::matmul)
       .def("sum", &underhfs::CudaTensorF32::sum);
+  py::class_<underhfs::CudaTensorF16>(m, "CudaTensorF16")
+      .def(py::init<const std::vector<float>&, std::vector<std::size_t>>())
+      .def_property_readonly("shape", &underhfs::CudaTensorF16::shape)
+      .def("numel", &underhfs::CudaTensorF16::numel)
+      .def("to_host", &underhfs::CudaTensorF16::to_host)
+      .def("add", &underhfs::CudaTensorF16::add)
+      .def("mul", &underhfs::CudaTensorF16::mul);
+  py::class_<underhfs::CudaTensorBF16>(m, "CudaTensorBF16")
+      .def(py::init<const std::vector<float>&, std::vector<std::size_t>>())
+      .def_property_readonly("shape", &underhfs::CudaTensorBF16::shape)
+      .def("numel", &underhfs::CudaTensorBF16::numel)
+      .def("to_host", &underhfs::CudaTensorBF16::to_host)
+      .def("add", &underhfs::CudaTensorBF16::add)
+      .def("mul", &underhfs::CudaTensorBF16::mul);
 #endif
 }

@@ -1,6 +1,6 @@
 from underhfs.cuda import allocator_stats, empty_cache, stream_stats, synchronize
 from underhfs.native import probe, status
-from underhfs.tensor import tensor
+from underhfs.tensor import DType, tensor
 
 
 def test_native_contract_probe_when_available():
@@ -19,6 +19,10 @@ def test_native_contract_probe_when_available():
         assert result["cuda_tensor_mul_f32"] == [3.0, 8.0]
         assert result["cuda_tensor_sum_f32"] == [3.0]
         assert result["cuda_tensor_matmul_f32"] == [19.0, 22.0, 43.0, 50.0]
+        assert result["cuda_tensor_add_f16"] == [4.0, 6.0]
+        assert result["cuda_tensor_mul_f16"] == [3.0, 8.0]
+        assert result["cuda_tensor_add_bf16"] == [4.0, 6.0]
+        assert result["cuda_tensor_mul_bf16"] == [3.0, 8.0]
         assert result["cuda_allocator"]["allocated_bytes"] > 0
         assert result["cuda_stream"]["non_blocking_streams"] == 1
         assert result["cuda_stream"]["launches"] > 0
@@ -67,6 +71,23 @@ def test_tensor_uses_native_cuda_mul_and_sum_when_available():
     assert total.backend == "native_cuda"
     assert product.tolist() == [4.0, 10.0, 18.0]
     assert total.tolist() == 32.0
+
+
+def test_tensor_uses_native_cuda_fp16_and_bf16_elementwise_when_available():
+    state = status()
+    if not state.cuda_enabled:
+        return
+    for dtype in (DType.FP16, DType.BF16):
+        left = tensor([1.0, 2.0], dtype=dtype).cuda()
+        right = tensor([3.0, 4.0], dtype=dtype).cuda()
+        added = left + right
+        multiplied = left * right
+        assert added.backend == "native_cuda"
+        assert multiplied.backend == "native_cuda"
+        assert added.dtype is dtype
+        assert multiplied.dtype is dtype
+        assert added.tolist() == [4.0, 6.0]
+        assert multiplied.tolist() == [3.0, 8.0]
 
 
 def test_tensor_uses_native_cuda_matmul_when_available():

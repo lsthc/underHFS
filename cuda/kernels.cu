@@ -1,4 +1,6 @@
 #include <cublas_v2.h>
+#include <cuda_bf16.h>
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <numeric>
@@ -49,6 +51,66 @@ extern "C" __global__ void underhfs_sum_blocks_f32(const float* values, float* p
   }
   if (tid == 0) {
     partials[blockIdx.x] = scratch[0];
+  }
+}
+
+extern "C" __global__ void underhfs_f32_to_f16(const float* src, __half* dst, int n) {
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < n) {
+    dst[index] = __float2half(src[index]);
+  }
+}
+
+extern "C" __global__ void underhfs_f16_to_f32(const __half* src, float* dst, int n) {
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < n) {
+    dst[index] = __half2float(src[index]);
+  }
+}
+
+extern "C" __global__ void underhfs_add_f16(
+    const __half* left, const __half* right, __half* out, int n) {
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < n) {
+    out[index] = __hadd(left[index], right[index]);
+  }
+}
+
+extern "C" __global__ void underhfs_mul_f16(
+    const __half* left, const __half* right, __half* out, int n) {
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < n) {
+    out[index] = __hmul(left[index], right[index]);
+  }
+}
+
+extern "C" __global__ void underhfs_f32_to_bf16(const float* src, __nv_bfloat16* dst, int n) {
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < n) {
+    dst[index] = __float2bfloat16(src[index]);
+  }
+}
+
+extern "C" __global__ void underhfs_bf16_to_f32(const __nv_bfloat16* src, float* dst, int n) {
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < n) {
+    dst[index] = __bfloat162float(src[index]);
+  }
+}
+
+extern "C" __global__ void underhfs_add_bf16(
+    const __nv_bfloat16* left, const __nv_bfloat16* right, __nv_bfloat16* out, int n) {
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < n) {
+    out[index] = __float2bfloat16(__bfloat162float(left[index]) + __bfloat162float(right[index]));
+  }
+}
+
+extern "C" __global__ void underhfs_mul_bf16(
+    const __nv_bfloat16* left, const __nv_bfloat16* right, __nv_bfloat16* out, int n) {
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < n) {
+    out[index] = __float2bfloat16(__bfloat162float(left[index]) * __bfloat162float(right[index]));
   }
 }
 
@@ -396,6 +458,268 @@ CudaTensorF32 CudaTensorF32::sum() const {
     }
     throw;
   }
+}
+
+CudaTensorF16::CudaTensorF16(const std::vector<float>& host, std::vector<std::size_t> shape)
+    : shape_(std::move(shape)) {
+  numel_ = std::accumulate(shape_.begin(), shape_.end(), static_cast<std::size_t>(1),
+                           std::multiplies<>());
+  if (numel_ != host.size()) {
+    throw std::invalid_argument("CudaTensorF16 host size does not match shape");
+  }
+  float* staging = cuda_allocator().allocate(numel_ * sizeof(float), "CudaTensorF16 staging cudaMalloc");
+  device_ = cuda_allocator().allocate(numel_ * sizeof(__half), "CudaTensorF16 cudaMalloc");
+  try {
+    check_cuda(cudaMemcpyAsync(staging, host.data(), numel_ * sizeof(float), cudaMemcpyHostToDevice,
+                               cuda_runtime().stream()),
+               "CudaTensorF16 host-to-device copy");
+    cuda_runtime().record_copy();
+    const int block = 256;
+    const int grid = (static_cast<int>(numel_) + block - 1) / block;
+    underhfs_f32_to_f16<<<grid, block, 0, cuda_runtime().stream()>>>(
+        staging, static_cast<__half*>(device_), static_cast<int>(numel_));
+    cuda_runtime().record_launch();
+    check_cuda(cudaGetLastError(), "CudaTensorF16 convert launch");
+    cuda_runtime().synchronize("CudaTensorF16 host-to-device sync");
+    cuda_allocator().release(staging, numel_ * sizeof(float));
+  } catch (...) {
+    cuda_allocator().release(staging, numel_ * sizeof(float));
+    cuda_allocator().release(static_cast<float*>(device_), numel_ * sizeof(__half));
+    device_ = nullptr;
+    throw;
+  }
+}
+
+CudaTensorF16::CudaTensorF16(void* device, std::vector<std::size_t> shape)
+    : device_(device), shape_(std::move(shape)) {
+  numel_ = std::accumulate(shape_.begin(), shape_.end(), static_cast<std::size_t>(1),
+                           std::multiplies<>());
+}
+
+CudaTensorF16::~CudaTensorF16() {
+  if (device_ != nullptr) {
+    cuda_allocator().release(static_cast<float*>(device_), numel_ * sizeof(__half));
+  }
+}
+
+CudaTensorF16::CudaTensorF16(CudaTensorF16&& other) noexcept
+    : device_(other.device_), shape_(std::move(other.shape_)), numel_(other.numel_) {
+  other.device_ = nullptr;
+  other.numel_ = 0;
+}
+
+CudaTensorF16& CudaTensorF16::operator=(CudaTensorF16&& other) noexcept {
+  if (this != &other) {
+    if (device_ != nullptr) {
+      cuda_allocator().release(static_cast<float*>(device_), numel_ * sizeof(__half));
+    }
+    device_ = other.device_;
+    shape_ = std::move(other.shape_);
+    numel_ = other.numel_;
+    other.device_ = nullptr;
+    other.numel_ = 0;
+  }
+  return *this;
+}
+
+const std::vector<std::size_t>& CudaTensorF16::shape() const { return shape_; }
+
+std::size_t CudaTensorF16::numel() const { return numel_; }
+
+std::vector<float> CudaTensorF16::to_host() const {
+  float* staging = cuda_allocator().allocate(numel_ * sizeof(float), "CudaTensorF16 to_host staging");
+  std::vector<float> host(numel_, 0.0f);
+  try {
+    const int block = 256;
+    const int grid = (static_cast<int>(numel_) + block - 1) / block;
+    underhfs_f16_to_f32<<<grid, block, 0, cuda_runtime().stream()>>>(
+        static_cast<const __half*>(device_), staging, static_cast<int>(numel_));
+    cuda_runtime().record_launch();
+    check_cuda(cudaGetLastError(), "CudaTensorF16 to_host convert launch");
+    check_cuda(cudaMemcpyAsync(host.data(), staging, numel_ * sizeof(float), cudaMemcpyDeviceToHost,
+                               cuda_runtime().stream()),
+               "CudaTensorF16 device-to-host copy");
+    cuda_runtime().record_copy();
+    cuda_runtime().synchronize("CudaTensorF16 device-to-host sync");
+    cuda_allocator().release(staging, numel_ * sizeof(float));
+    return host;
+  } catch (...) {
+    cuda_allocator().release(staging, numel_ * sizeof(float));
+    throw;
+  }
+}
+
+CudaTensorF16 CudaTensorF16::add(const CudaTensorF16& other) const {
+  if (shape_ != other.shape_) {
+    throw std::invalid_argument("CudaTensorF16 add requires identical shapes");
+  }
+  void* out = cuda_allocator().allocate(numel_ * sizeof(__half), "CudaTensorF16 add cudaMalloc");
+  const int block = 256;
+  const int grid = (static_cast<int>(numel_) + block - 1) / block;
+  underhfs_add_f16<<<grid, block, 0, cuda_runtime().stream()>>>(
+      static_cast<const __half*>(device_), static_cast<const __half*>(other.device_),
+      static_cast<__half*>(out), static_cast<int>(numel_));
+  try {
+    cuda_runtime().record_launch();
+    check_cuda(cudaGetLastError(), "CudaTensorF16 add launch");
+    cuda_runtime().synchronize("CudaTensorF16 add sync");
+  } catch (...) {
+    cuda_allocator().release(static_cast<float*>(out), numel_ * sizeof(__half));
+    throw;
+  }
+  return CudaTensorF16(out, shape_);
+}
+
+CudaTensorF16 CudaTensorF16::mul(const CudaTensorF16& other) const {
+  if (shape_ != other.shape_) {
+    throw std::invalid_argument("CudaTensorF16 mul requires identical shapes");
+  }
+  void* out = cuda_allocator().allocate(numel_ * sizeof(__half), "CudaTensorF16 mul cudaMalloc");
+  const int block = 256;
+  const int grid = (static_cast<int>(numel_) + block - 1) / block;
+  underhfs_mul_f16<<<grid, block, 0, cuda_runtime().stream()>>>(
+      static_cast<const __half*>(device_), static_cast<const __half*>(other.device_),
+      static_cast<__half*>(out), static_cast<int>(numel_));
+  try {
+    cuda_runtime().record_launch();
+    check_cuda(cudaGetLastError(), "CudaTensorF16 mul launch");
+    cuda_runtime().synchronize("CudaTensorF16 mul sync");
+  } catch (...) {
+    cuda_allocator().release(static_cast<float*>(out), numel_ * sizeof(__half));
+    throw;
+  }
+  return CudaTensorF16(out, shape_);
+}
+
+CudaTensorBF16::CudaTensorBF16(const std::vector<float>& host, std::vector<std::size_t> shape)
+    : shape_(std::move(shape)) {
+  numel_ = std::accumulate(shape_.begin(), shape_.end(), static_cast<std::size_t>(1),
+                           std::multiplies<>());
+  if (numel_ != host.size()) {
+    throw std::invalid_argument("CudaTensorBF16 host size does not match shape");
+  }
+  float* staging = cuda_allocator().allocate(numel_ * sizeof(float), "CudaTensorBF16 staging cudaMalloc");
+  device_ = cuda_allocator().allocate(numel_ * sizeof(__nv_bfloat16), "CudaTensorBF16 cudaMalloc");
+  try {
+    check_cuda(cudaMemcpyAsync(staging, host.data(), numel_ * sizeof(float), cudaMemcpyHostToDevice,
+                               cuda_runtime().stream()),
+               "CudaTensorBF16 host-to-device copy");
+    cuda_runtime().record_copy();
+    const int block = 256;
+    const int grid = (static_cast<int>(numel_) + block - 1) / block;
+    underhfs_f32_to_bf16<<<grid, block, 0, cuda_runtime().stream()>>>(
+        staging, static_cast<__nv_bfloat16*>(device_), static_cast<int>(numel_));
+    cuda_runtime().record_launch();
+    check_cuda(cudaGetLastError(), "CudaTensorBF16 convert launch");
+    cuda_runtime().synchronize("CudaTensorBF16 host-to-device sync");
+    cuda_allocator().release(staging, numel_ * sizeof(float));
+  } catch (...) {
+    cuda_allocator().release(staging, numel_ * sizeof(float));
+    cuda_allocator().release(static_cast<float*>(device_), numel_ * sizeof(__nv_bfloat16));
+    device_ = nullptr;
+    throw;
+  }
+}
+
+CudaTensorBF16::CudaTensorBF16(void* device, std::vector<std::size_t> shape)
+    : device_(device), shape_(std::move(shape)) {
+  numel_ = std::accumulate(shape_.begin(), shape_.end(), static_cast<std::size_t>(1),
+                           std::multiplies<>());
+}
+
+CudaTensorBF16::~CudaTensorBF16() {
+  if (device_ != nullptr) {
+    cuda_allocator().release(static_cast<float*>(device_), numel_ * sizeof(__nv_bfloat16));
+  }
+}
+
+CudaTensorBF16::CudaTensorBF16(CudaTensorBF16&& other) noexcept
+    : device_(other.device_), shape_(std::move(other.shape_)), numel_(other.numel_) {
+  other.device_ = nullptr;
+  other.numel_ = 0;
+}
+
+CudaTensorBF16& CudaTensorBF16::operator=(CudaTensorBF16&& other) noexcept {
+  if (this != &other) {
+    if (device_ != nullptr) {
+      cuda_allocator().release(static_cast<float*>(device_), numel_ * sizeof(__nv_bfloat16));
+    }
+    device_ = other.device_;
+    shape_ = std::move(other.shape_);
+    numel_ = other.numel_;
+    other.device_ = nullptr;
+    other.numel_ = 0;
+  }
+  return *this;
+}
+
+const std::vector<std::size_t>& CudaTensorBF16::shape() const { return shape_; }
+
+std::size_t CudaTensorBF16::numel() const { return numel_; }
+
+std::vector<float> CudaTensorBF16::to_host() const {
+  float* staging = cuda_allocator().allocate(numel_ * sizeof(float), "CudaTensorBF16 to_host staging");
+  std::vector<float> host(numel_, 0.0f);
+  try {
+    const int block = 256;
+    const int grid = (static_cast<int>(numel_) + block - 1) / block;
+    underhfs_bf16_to_f32<<<grid, block, 0, cuda_runtime().stream()>>>(
+        static_cast<const __nv_bfloat16*>(device_), staging, static_cast<int>(numel_));
+    cuda_runtime().record_launch();
+    check_cuda(cudaGetLastError(), "CudaTensorBF16 to_host convert launch");
+    check_cuda(cudaMemcpyAsync(host.data(), staging, numel_ * sizeof(float), cudaMemcpyDeviceToHost,
+                               cuda_runtime().stream()),
+               "CudaTensorBF16 device-to-host copy");
+    cuda_runtime().record_copy();
+    cuda_runtime().synchronize("CudaTensorBF16 device-to-host sync");
+    cuda_allocator().release(staging, numel_ * sizeof(float));
+    return host;
+  } catch (...) {
+    cuda_allocator().release(staging, numel_ * sizeof(float));
+    throw;
+  }
+}
+
+CudaTensorBF16 CudaTensorBF16::add(const CudaTensorBF16& other) const {
+  if (shape_ != other.shape_) {
+    throw std::invalid_argument("CudaTensorBF16 add requires identical shapes");
+  }
+  void* out = cuda_allocator().allocate(numel_ * sizeof(__nv_bfloat16), "CudaTensorBF16 add cudaMalloc");
+  const int block = 256;
+  const int grid = (static_cast<int>(numel_) + block - 1) / block;
+  underhfs_add_bf16<<<grid, block, 0, cuda_runtime().stream()>>>(
+      static_cast<const __nv_bfloat16*>(device_), static_cast<const __nv_bfloat16*>(other.device_),
+      static_cast<__nv_bfloat16*>(out), static_cast<int>(numel_));
+  try {
+    cuda_runtime().record_launch();
+    check_cuda(cudaGetLastError(), "CudaTensorBF16 add launch");
+    cuda_runtime().synchronize("CudaTensorBF16 add sync");
+  } catch (...) {
+    cuda_allocator().release(static_cast<float*>(out), numel_ * sizeof(__nv_bfloat16));
+    throw;
+  }
+  return CudaTensorBF16(out, shape_);
+}
+
+CudaTensorBF16 CudaTensorBF16::mul(const CudaTensorBF16& other) const {
+  if (shape_ != other.shape_) {
+    throw std::invalid_argument("CudaTensorBF16 mul requires identical shapes");
+  }
+  void* out = cuda_allocator().allocate(numel_ * sizeof(__nv_bfloat16), "CudaTensorBF16 mul cudaMalloc");
+  const int block = 256;
+  const int grid = (static_cast<int>(numel_) + block - 1) / block;
+  underhfs_mul_bf16<<<grid, block, 0, cuda_runtime().stream()>>>(
+      static_cast<const __nv_bfloat16*>(device_), static_cast<const __nv_bfloat16*>(other.device_),
+      static_cast<__nv_bfloat16*>(out), static_cast<int>(numel_));
+  try {
+    cuda_runtime().record_launch();
+    check_cuda(cudaGetLastError(), "CudaTensorBF16 mul launch");
+    cuda_runtime().synchronize("CudaTensorBF16 mul sync");
+  } catch (...) {
+    cuda_allocator().release(static_cast<float*>(out), numel_ * sizeof(__nv_bfloat16));
+    throw;
+  }
+  return CudaTensorBF16(out, shape_);
 }
 
 std::vector<float> cuda_add_f32_host(const std::vector<float>& left,

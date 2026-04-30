@@ -84,6 +84,16 @@ def probe() -> dict[str, Any]:
         left_gpu_matmul = core.CudaTensorF32([1.0, 2.0, 3.0, 4.0], [2, 2])
         right_gpu_matmul = core.CudaTensorF32([5.0, 6.0, 7.0, 8.0], [2, 2])
         result["cuda_tensor_matmul_f32"] = list(left_gpu_matmul.matmul(right_gpu_matmul).to_host())
+        if hasattr(core, "CudaTensorF16"):
+            left_f16 = core.CudaTensorF16([1.0, 2.0], [2])
+            right_f16 = core.CudaTensorF16([3.0, 4.0], [2])
+            result["cuda_tensor_add_f16"] = list(left_f16.add(right_f16).to_host())
+            result["cuda_tensor_mul_f16"] = list(left_f16.mul(right_f16).to_host())
+        if hasattr(core, "CudaTensorBF16"):
+            left_bf16 = core.CudaTensorBF16([1.0, 2.0], [2])
+            right_bf16 = core.CudaTensorBF16([3.0, 4.0], [2])
+            result["cuda_tensor_add_bf16"] = list(left_bf16.add(right_bf16).to_host())
+            result["cuda_tensor_mul_bf16"] = list(left_bf16.mul(right_bf16).to_host())
         if hasattr(core, "cuda_allocator_stats"):
             result["cuda_allocator"] = {
                 str(key): int(value) for key, value in core.cuda_allocator_stats().items()

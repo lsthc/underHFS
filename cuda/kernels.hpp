@@ -32,6 +32,54 @@ class CudaTensorF32 {
   std::size_t numel_ = 0;
 };
 
+class CudaTensorF16 {
+ public:
+  CudaTensorF16(const std::vector<float>& host, std::vector<std::size_t> shape);
+  ~CudaTensorF16();
+
+  CudaTensorF16(const CudaTensorF16&) = delete;
+  CudaTensorF16& operator=(const CudaTensorF16&) = delete;
+  CudaTensorF16(CudaTensorF16&& other) noexcept;
+  CudaTensorF16& operator=(CudaTensorF16&& other) noexcept;
+
+  const std::vector<std::size_t>& shape() const;
+  std::size_t numel() const;
+  std::vector<float> to_host() const;
+  CudaTensorF16 add(const CudaTensorF16& other) const;
+  CudaTensorF16 mul(const CudaTensorF16& other) const;
+
+ private:
+  CudaTensorF16(void* device, std::vector<std::size_t> shape);
+
+  void* device_ = nullptr;
+  std::vector<std::size_t> shape_;
+  std::size_t numel_ = 0;
+};
+
+class CudaTensorBF16 {
+ public:
+  CudaTensorBF16(const std::vector<float>& host, std::vector<std::size_t> shape);
+  ~CudaTensorBF16();
+
+  CudaTensorBF16(const CudaTensorBF16&) = delete;
+  CudaTensorBF16& operator=(const CudaTensorBF16&) = delete;
+  CudaTensorBF16(CudaTensorBF16&& other) noexcept;
+  CudaTensorBF16& operator=(CudaTensorBF16&& other) noexcept;
+
+  const std::vector<std::size_t>& shape() const;
+  std::size_t numel() const;
+  std::vector<float> to_host() const;
+  CudaTensorBF16 add(const CudaTensorBF16& other) const;
+  CudaTensorBF16 mul(const CudaTensorBF16& other) const;
+
+ private:
+  CudaTensorBF16(void* device, std::vector<std::size_t> shape);
+
+  void* device_ = nullptr;
+  std::vector<std::size_t> shape_;
+  std::size_t numel_ = 0;
+};
+
 std::vector<float> cuda_add_f32_host(const std::vector<float>& left,
                                      const std::vector<float>& right);
 std::unordered_map<std::string, std::size_t> cuda_allocator_stats();
