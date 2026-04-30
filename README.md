@@ -52,7 +52,8 @@ external test and benchmark oracles.
 - CLI microbenchmarks report CPU and CUDA add/matmul throughput with backend
   labels, so performance work has a measurable baseline.
 - Binary state serialization stores a safe length-prefixed JSON header plus raw
-  fp32 tensor payloads, avoiding executable checkpoint formats.
+  fp32 tensor payloads with payload/tensor checksums and span validation,
+  avoiding executable checkpoint formats.
 - Native CUDA storage now covers fp16 and bf16 elementwise add/mul paths in
   addition to fp32.
 - AdamW/FusedAdamW preserve parameter device and dtype in optimizer state, and

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 import struct
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 FORMAT_VERSION = 1
 BINARY_MAGIC = b"UHFSBIN1"
 _HEADER_SIZE_STRUCT = struct.Struct("<Q")
+_BINARY_FORMAT = "underhfs.safe-tensors-binary"
 
 
 def save_state_dict(path: str | Path, state: dict[str, Any]) -> None:
@@ -25,8 +27,10 @@ def load_state_dict(path: str | Path) -> dict[str, Any]:
 
 def save_binary_state_dict(path: str | Path, state: dict[str, Any]) -> None:
     header: dict[str, Any] = {
-        "format": "underhfs.safe-tensors-binary",
+        "format": _BINARY_FORMAT,
         "version": FORMAT_VERSION,
+        "payload_nbytes": 0,
+        "payload_sha256": "",
         "tensors": {},
     }
     chunks: list[bytes] = []
@@ -39,11 +43,15 @@ def save_binary_state_dict(path: str | Path, state: dict[str, Any]) -> None:
             "shape": _shape_of(value),
             "offset": offset,
             "nbytes": len(data),
+            "sha256": sha256(data).hexdigest(),
         }
         chunks.append(data)
         offset += len(data)
+    payload = b"".join(chunks)
+    header["payload_nbytes"] = len(payload)
+    header["payload_sha256"] = sha256(payload).hexdigest()
     encoded_header = json.dumps(header, separators=(",", ":")).encode("utf-8")
-    Path(path).write_bytes(BINARY_MAGIC + _HEADER_SIZE_STRUCT.pack(len(encoded_header)) + encoded_header + b"".join(chunks))
+    Path(path).write_bytes(BINARY_MAGIC + _HEADER_SIZE_STRUCT.pack(len(encoded_header)) + encoded_header + payload)
 
 
 def load_binary_state_dict(path: str | Path) -> dict[str, Any]:
@@ -57,20 +65,34 @@ def load_binary_state_dict(path: str | Path) -> dict[str, Any]:
     if payload_offset > len(data):
         raise ValueError("truncated underhfs binary state header")
     header = json.loads(data[header_offset:payload_offset].decode("utf-8"))
-    if header.get("format") != "underhfs.safe-tensors-binary":
+    if header.get("format") != _BINARY_FORMAT:
         raise ValueError("not an underhfs binary state file")
     if header.get("version") != FORMAT_VERSION:
         raise ValueError(f"unsupported binary state version: {header.get('version')}")
+    payload = data[payload_offset:]
+    expected_payload_nbytes = int(header.get("payload_nbytes", len(payload)))
+    if expected_payload_nbytes != len(payload):
+        raise ValueError(
+            f"binary state payload size mismatch: expected {expected_payload_nbytes} bytes, got {len(payload)}"
+        )
+    expected_payload_hash = header.get("payload_sha256")
+    if expected_payload_hash and sha256(payload).hexdigest() != expected_payload_hash:
+        raise ValueError("binary state payload checksum mismatch")
+    _validate_tensor_layout(header["tensors"], len(payload))
     out: dict[str, Any] = {}
     for name, meta in header["tensors"].items():
         if meta.get("dtype") != "fp32":
             raise ValueError(f"unsupported tensor dtype in binary state: {meta.get('dtype')}")
-        start = payload_offset + int(meta["offset"])
+        start = int(meta["offset"])
         end = start + int(meta["nbytes"])
-        if end > len(data):
+        if end > len(payload):
             raise ValueError(f"truncated tensor payload: {name}")
+        tensor_payload = payload[start:end]
+        expected_tensor_hash = meta.get("sha256")
+        if expected_tensor_hash and sha256(tensor_payload).hexdigest() != expected_tensor_hash:
+            raise ValueError(f"tensor payload checksum mismatch: {name}")
         count = int(meta["nbytes"]) // 4
-        flat = list(struct.unpack(f"<{count}f", data[start:end])) if count else []
+        flat = list(struct.unpack(f"<{count}f", tensor_payload)) if count else []
         out[name] = _unflatten_state_value(flat, list(meta["shape"]))
     return out
 
@@ -169,3 +191,26 @@ def _unflatten_state_value(flat: list[float], shape: list[int]) -> Any:
         return [build(dims[1:]) for _ in range(dims[0])]
 
     return build(shape)
+
+
+def _validate_tensor_layout(tensors: dict[str, Any], payload_nbytes: int) -> None:
+    spans: list[tuple[int, int, str]] = []
+    for name, meta in tensors.items():
+        offset = int(meta["offset"])
+        nbytes = int(meta["nbytes"])
+        if offset < 0 or nbytes < 0:
+            raise ValueError(f"invalid negative tensor span: {name}")
+        if nbytes % 4 != 0:
+            raise ValueError(f"fp32 tensor payload is not 4-byte aligned: {name}")
+        end = offset + nbytes
+        if end > payload_nbytes:
+            raise ValueError(f"tensor payload points past end of file: {name}")
+        spans.append((offset, end, name))
+    spans.sort()
+    previous_end = 0
+    previous_name = ""
+    for start, end, name in spans:
+        if start < previous_end:
+            raise ValueError(f"overlapping tensor payloads: {previous_name} and {name}")
+        previous_end = end
+        previous_name = name

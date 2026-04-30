@@ -1,9 +1,12 @@
+import json
+import struct
 from pathlib import Path
 
 from underhfs import tensor
 from underhfs.functional import cross_entropy, mse_loss
 from underhfs.nn import Conv2d, Embedding, Linear, SelfAttention
 from underhfs.serialization import (
+    BINARY_MAGIC,
     load_binary_state_dict,
     load_state_dict,
     save_binary_state_dict,
@@ -61,6 +64,48 @@ def test_binary_state_serialization_roundtrip(tmp_path=None):
     assert path.read_bytes().startswith(b"UHFSBIN1")
     if tmp_path is None:
         path.unlink()
+
+
+def test_binary_state_rejects_corrupted_payload(tmp_path=None):
+    path = Path("tmp_underhfs_state_corrupt.uhfsbin") if tmp_path is None else tmp_path / "state.uhfsbin"
+    model = Linear(2, 1)
+    save_binary_state_dict(path, model.state_dict())
+    data = bytearray(path.read_bytes())
+    data[-1] ^= 0xFF
+    path.write_bytes(data)
+    try:
+        load_binary_state_dict(path)
+    except ValueError as exc:
+        assert "checksum mismatch" in str(exc)
+    else:
+        raise AssertionError("corrupted binary checkpoint should fail checksum validation")
+    finally:
+        if tmp_path is None:
+            path.unlink()
+
+
+def test_binary_state_rejects_overlapping_tensor_spans(tmp_path=None):
+    path = Path("tmp_underhfs_state_overlap.uhfsbin") if tmp_path is None else tmp_path / "state.uhfsbin"
+    model = Linear(2, 1)
+    save_binary_state_dict(path, model.state_dict())
+    data = path.read_bytes()
+    header_size = struct.unpack_from("<Q", data, len(BINARY_MAGIC))[0]
+    header_offset = len(BINARY_MAGIC) + 8
+    payload_offset = header_offset + header_size
+    header = json.loads(data[header_offset:payload_offset].decode("utf-8"))
+    tensor_names = list(header["tensors"])
+    header["tensors"][tensor_names[1]]["offset"] = header["tensors"][tensor_names[0]]["offset"]
+    encoded_header = json.dumps(header, separators=(",", ":")).encode("utf-8")
+    path.write_bytes(BINARY_MAGIC + struct.pack("<Q", len(encoded_header)) + encoded_header + data[payload_offset:])
+    try:
+        load_binary_state_dict(path)
+    except ValueError as exc:
+        assert "overlapping tensor payloads" in str(exc)
+    else:
+        raise AssertionError("overlapping binary checkpoint tensor spans should fail validation")
+    finally:
+        if tmp_path is None:
+            path.unlink()
 
 
 def _nested_close(left, right, tol=1e-6):
