@@ -55,6 +55,15 @@ def test_fused_adamw_updates_parameters():
     assert fused_adamw_kernel_status(model.parameters()).backend == "python"
 
 
+def test_fused_adamw_reports_native_cuda_when_available():
+    if not status().cuda_enabled:
+        return
+    param = tensor([1.0, 2.0], requires_grad=True).cuda()
+    status_report = fused_adamw_kernel_status([param])
+    assert status_report.available
+    assert status_report.backend == "cuda-native"
+
+
 def test_conv2d_backend_status_reports_cudnn_contract():
     conv = Conv2d(1, 1, 1)
     assert conv.backend_status().available

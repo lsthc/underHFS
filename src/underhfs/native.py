@@ -15,6 +15,8 @@ class NativeStatus:
     available: bool
     reason: str | None = None
     cuda_enabled: bool = False
+    cudnn_enabled: bool = False
+    nccl_enabled: bool = False
 
 
 def status() -> NativeStatus:
@@ -23,7 +25,13 @@ def status() -> NativeStatus:
         import underhfs._core as _core
     except Exception as exc:
         return NativeStatus(False, str(exc))
-    return NativeStatus(True, None, bool(getattr(_core, "cuda_enabled", False)))
+    return NativeStatus(
+        True,
+        None,
+        bool(getattr(_core, "cuda_enabled", False)),
+        bool(getattr(_core, "cudnn_enabled", False)),
+        bool(getattr(_core, "nccl_enabled", False)),
+    )
 
 
 def require_native():
@@ -66,6 +74,8 @@ def probe() -> dict[str, Any]:
     result = {
         "version": getattr(core, "__version__", "unknown"),
         "cuda_enabled": cuda_enabled,
+        "cudnn_enabled": bool(getattr(core, "cudnn_enabled", False)),
+        "nccl_enabled": bool(getattr(core, "nccl_enabled", False)),
         "numel": left.numel(),
         "shape": list(left.shape),
         "strides": list(left.strides),

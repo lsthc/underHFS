@@ -10,7 +10,8 @@ native runtime bring-up phase.
   CUDA when the native backend is available.
 - `Tensor.backward(grad=None)` runs eager reverse-mode autograd.
 - `Tensor.view`, `reshape`, `flatten`, slicing, `sum`, `mean`, `softmax`,
-  `relu`, `tanh`, `exp`, `log`, `matmul` are available in the fallback runtime.
+  `relu`, `tanh`, `exp`, `log`, `matmul` are available in the portable runtime;
+  supported dense fp32 CPU/CUDA paths use native fast paths when `_core` is built.
 
 ## Autograd
 
@@ -59,6 +60,8 @@ native runtime bring-up phase.
 - `underhfs.serve.serve_http(handler, config=None)`
 - `underhfs.serve.serve_websocket(handler, config=None)`
 - `underhfs.serve.serve_websocket_loop(handler, config=None)`
+- `underhfs.serve.serve_grpc(handler, config=None)`
+- `underhfs.serve.serve_cpp(executable=None)`
 - `underhfs.serve.serve_grpc_manifest(config=None)`
 - `underhfs.serve.serve_cpp_manifest(config=None)`
 - `underhfs.serve.open_stream(source, kind=StreamSourceKind.FILE)`

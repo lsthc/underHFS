@@ -6,7 +6,7 @@ from math import sqrt
 from typing import Iterable, Iterator
 
 from underhfs import functional as F
-from underhfs.tensor import Tensor, arange, kaiming_uniform, ones, tensor, uniform, zeros
+from underhfs.tensor import DType, Layout, Tensor, arange, kaiming_uniform, ones, tensor, uniform, zeros
 
 
 @dataclass(frozen=True)
@@ -361,11 +361,26 @@ class Conv2d(Module):
 
     def backend_status(self, x: Tensor | None = None) -> BackendStatus:
         if x is not None and x.device.kind == "cuda":
+            if not _conv2d_cudnn_supported_tensor(x, self.weight, self.bias):
+                return BackendStatus(
+                    "conv2d",
+                    "cudnn",
+                    False,
+                    "CUDA Conv2d requires fp32 dense contiguous input, weight, and bias on the same CUDA device",
+                )
+            try:
+                from underhfs.native import status
+
+                native = status()
+            except Exception as exc:
+                return BackendStatus("conv2d", "cudnn", False, str(exc))
+            if native.cudnn_enabled:
+                return BackendStatus("conv2d", "cudnn", True, "native cuDNN fp32 convolution")
             return BackendStatus(
                 "conv2d",
                 "cudnn",
                 False,
-                "cuDNN convolution descriptor/execution path is reserved; Python fallback is used for CPU tensors",
+                "CUDA fp32 Conv2d requires native core built with UNDERHFS_WITH_CUDNN=ON",
             )
         return BackendStatus("conv2d", "python", True, "portable fallback convolution")
 
@@ -385,6 +400,27 @@ class Conv2d(Module):
         out_w = (width + 2 * pad_w - kernel_w) // stride_w + 1
         if out_h <= 0 or out_w <= 0:
             raise ValueError("kernel/stride/padding produce empty output")
+
+        native = _try_cudnn_conv2d_forward(
+            x,
+            self.weight,
+            self.bias,
+            batch=batch,
+            channels=channels,
+            height=height,
+            width=width,
+            out_channels=self.out_channels,
+            kernel_h=kernel_h,
+            kernel_w=kernel_w,
+            stride_h=stride_h,
+            stride_w=stride_w,
+            pad_h=pad_h,
+            pad_w=pad_w,
+            out_h=out_h,
+            out_w=out_w,
+        )
+        if native is not None:
+            return native
 
         values: list[float] = []
         for n in range(batch):
@@ -520,5 +556,115 @@ def _try_native_attention(q: Tensor, k: Tensor, v: Tensor, features: int, *, cau
         return None
     out = tensor(values, shape=q.shape, requires_grad=q.requires_grad or k.requires_grad or v.requires_grad, device=q.device)
     out.backend = "native_cuda_attention"
+    out._attach_cuda_storage()
+    return out
+
+
+def _conv2d_cudnn_supported_tensor(x: Tensor, weight: Tensor, bias: Tensor | None) -> bool:
+    return (
+        x.device.kind == "cuda"
+        and weight.device == x.device
+        and (bias is None or bias.device == x.device)
+        and x.dtype is DType.FP32
+        and weight.dtype is DType.FP32
+        and (bias is None or bias.dtype is DType.FP32)
+        and x.layout is Layout.DENSE
+        and weight.layout is Layout.DENSE
+        and (bias is None or bias.layout is Layout.DENSE)
+        and x.is_contiguous()
+        and weight.is_contiguous()
+        and (bias is None or bias.is_contiguous())
+    )
+
+
+def _try_cudnn_conv2d_forward(
+    x: Tensor,
+    weight: Tensor,
+    bias: Tensor | None,
+    *,
+    batch: int,
+    channels: int,
+    height: int,
+    width: int,
+    out_channels: int,
+    kernel_h: int,
+    kernel_w: int,
+    stride_h: int,
+    stride_w: int,
+    pad_h: int,
+    pad_w: int,
+    out_h: int,
+    out_w: int,
+) -> Tensor | None:
+    if not _conv2d_cudnn_supported_tensor(x, weight, bias):
+        return None
+    try:
+        from underhfs.native import require_native
+
+        core = require_native()
+        if not bool(getattr(core, "cudnn_enabled", False)) or not hasattr(core, "cudnn_conv2d_forward_f32"):
+            return None
+        values = core.cudnn_conv2d_forward_f32(
+            [float(value) for value in x._flat_values()],
+            [float(value) for value in weight._flat_values()],
+            [] if bias is None else [float(value) for value in bias._flat_values()],
+            int(batch),
+            int(channels),
+            int(height),
+            int(width),
+            int(out_channels),
+            int(kernel_h),
+            int(kernel_w),
+            int(stride_h),
+            int(stride_w),
+            int(pad_h),
+            int(pad_w),
+        )
+    except Exception:
+        return None
+    out = tensor(
+        values,
+        shape=(batch, out_channels, out_h, out_w),
+        requires_grad=x.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad),
+        device=x.device,
+    )
+    parents = {x, weight}
+    if bias is not None:
+        parents.add(bias)
+    out._prev = parents
+    out._op = "conv2d"
+
+    def backward() -> None:
+        if out.grad is None:
+            return
+        grad_x = zeros(x.shape, device="cpu") if x.requires_grad else None
+        grad_w = zeros(weight.shape, device="cpu") if weight.requires_grad else None
+        grad_b = zeros(bias.shape, device="cpu") if bias is not None and bias.requires_grad else None
+        for n in range(batch):
+            for oc in range(out_channels):
+                for oh in range(out_h):
+                    for ow in range(out_w):
+                        go = out.grad._value_at((n, oc, oh, ow))
+                        if grad_b is not None:
+                            grad_b._add_at((oc,), go)
+                        for ic in range(channels):
+                            for kh in range(kernel_h):
+                                for kw in range(kernel_w):
+                                    ih = oh * stride_h + kh - pad_h
+                                    iw = ow * stride_w + kw - pad_w
+                                    if 0 <= ih < height and 0 <= iw < width:
+                                        if grad_x is not None:
+                                            grad_x._add_at((n, ic, ih, iw), weight._value_at((oc, ic, kh, kw)) * go)
+                                        if grad_w is not None:
+                                            grad_w._add_at((oc, ic, kh, kw), x._value_at((n, ic, ih, iw)) * go)
+        if grad_x is not None:
+            x._accumulate_grad(grad_x.to(x.device))
+        if grad_w is not None:
+            weight._accumulate_grad(grad_w.to(weight.device))
+        if grad_b is not None and bias is not None:
+            bias._accumulate_grad(grad_b.to(bias.device))
+
+    out._backward = backward
+    out.backend = "native_cudnn"
     out._attach_cuda_storage()
     return out

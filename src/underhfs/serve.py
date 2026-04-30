@@ -5,13 +5,14 @@ import base64
 from hashlib import sha1
 from dataclasses import dataclass
 from enum import Enum
+from concurrent import futures
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import socket
 from shutil import which
-from subprocess import PIPE, Popen
+from subprocess import PIPE, Popen, TimeoutExpired
 from threading import Thread
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Sequence
 
 
 class ServingProtocol(str, Enum):
@@ -223,6 +224,112 @@ class ServingManifest:
         }
 
 
+class GrpcJsonPredictServer:
+    def __init__(self, handler: Callable[[Any], Any], config: ServeConfig | None = None) -> None:
+        self.handler = handler
+        self.config = config or ServeConfig()
+        try:
+            import grpc
+        except ImportError as exc:
+            raise RuntimeError("gRPC serving requires optional dependency grpcio") from exc
+        self._grpc = grpc
+        self._server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
+        self._server.add_generic_rpc_handlers((_JsonPredictGrpcHandler(self.handler),))
+        self.port = self._server.add_insecure_port(f"{self.config.host}:{self.config.port}")
+        self.host = self.config.host
+        self.url = f"grpc://{self.host}:{self.port}"
+        self._started = False
+
+    def start(self) -> "GrpcJsonPredictServer":
+        if not self._started:
+            self._server.start()
+            self._started = True
+        return self
+
+    def close(self) -> None:
+        if self._started:
+            self._server.stop(grace=0).wait(timeout=2.0)
+            self._started = False
+
+    def predict(self, payload: Any) -> Any:
+        return self.handler(payload)
+
+
+class _JsonPredictGrpcHandler:
+    service_name = "underhfs.grpc.JsonPredictService"
+
+    def __init__(self, handler: Callable[[Any], Any]) -> None:
+        self.handler = handler
+
+    def service(self, handler_call_details):
+        if handler_call_details.method != f"/{self.service_name}/Predict":
+            return None
+        return self._unary_unary()
+
+    def _unary_unary(self):
+        import grpc
+
+        def predict(raw: bytes, _context) -> bytes:
+            payload = json.loads(raw.decode("utf-8")) if raw else {}
+            return json.dumps({"result": self.handler(payload)}).encode("utf-8")
+
+        return grpc.unary_unary_rpc_method_handler(
+            predict,
+            request_deserializer=lambda raw: raw,
+            response_serializer=lambda raw: raw,
+        )
+
+
+class CppJsonPredictServer:
+    def __init__(self, executable: str | Path | Sequence[str] | None = None) -> None:
+        self.command = [str(part) for part in executable] if isinstance(executable, Sequence) and not isinstance(executable, (str, bytes, Path)) else [str(executable or _default_cpp_executable())]
+        self.executable = self.command[0]
+        self._process: Popen[str] | None = None
+
+    def start(self) -> "CppJsonPredictServer":
+        if self._process is None:
+            path = Path(self.executable)
+            if not path.exists():
+                raise RuntimeError(f"C++ serving executable not found: {path}")
+            self._process = Popen(
+                self.command,
+                stdin=PIPE,
+                stdout=PIPE,
+                stderr=PIPE,
+                text=True,
+            )
+        return self
+
+    def close(self) -> None:
+        if self._process is None:
+            return
+        try:
+            if self._process.stdin is not None:
+                self._process.stdin.write(json.dumps({"op": "exit"}) + "\n")
+                self._process.stdin.flush()
+            self._process.wait(timeout=2.0)
+        except (BrokenPipeError, TimeoutExpired):
+            self._process.kill()
+        finally:
+            self._process = None
+
+    def request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.start()
+        assert self._process is not None and self._process.stdin is not None and self._process.stdout is not None
+        self._process.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        self._process.stdin.flush()
+        line = self._process.stdout.readline()
+        if not line:
+            raise RuntimeError("C++ serving process exited without a response")
+        response = json.loads(line)
+        if "error" in response:
+            raise RuntimeError(str(response["error"]))
+        return response
+
+    def predict(self, payload: Any) -> Any:
+        return self.request({"op": "predict", "payload": payload})["result"]
+
+
 def serve(handler: Callable[[Any], Any], config: ServeConfig | None = None) -> PythonServer:
     return PythonServer(handler, config)
 
@@ -243,11 +350,20 @@ def serve_grpc_manifest(config: ServeConfig | None = None) -> ServingManifest:
     return ServingManifest(ServingProtocol.GRPC, "underhfs.grpc.JsonPredictService", config or ServeConfig())
 
 
+def serve_grpc(handler: Callable[[Any], Any], config: ServeConfig | None = None) -> GrpcJsonPredictServer:
+    return GrpcJsonPredictServer(handler, config)
+
+
 def serve_cpp_manifest(config: ServeConfig | None = None) -> ServingManifest:
     return ServingManifest(ServingProtocol.CPP, "underhfs_cpp_serve", config or ServeConfig())
 
 
+def serve_cpp(executable: str | Path | None = None) -> CppJsonPredictServer:
+    return CppJsonPredictServer(executable)
+
+
 def protocol_capabilities() -> list[ProtocolCapability]:
+    grpc_available = _optional_import_available("grpc")
     return [
         ProtocolCapability(ServingProtocol.PYTHON, True, "in-process callable"),
         ProtocolCapability(ServingProtocol.HTTP, True, "standard-library JSON HTTP"),
@@ -260,14 +376,14 @@ def protocol_capabilities() -> list[ProtocolCapability]:
         ProtocolCapability(
             ServingProtocol.GRPC,
             True,
-            "service manifest",
-            "emits a stable service manifest until grpcio/protobuf runtime is installed",
+            "grpcio JSON predict service" if grpc_available else "service manifest",
+            "install underhfs[serve] to enable grpcio server runtime" if not grpc_available else "grpcio runtime available",
         ),
         ProtocolCapability(
             ServingProtocol.CPP,
-            True,
-            "native executable manifest",
-            "emits a stable C++ serving manifest while the executable is built",
+            _default_cpp_executable().exists(),
+            "native executable JSON stdin/stdout",
+            "C++ serving executable available" if _default_cpp_executable().exists() else "build native extension to install underhfs_cpp_serve",
         ),
     ]
 
@@ -286,7 +402,7 @@ def serve_protocol(
     handler: Callable[[Any], Any],
     protocol: ServingProtocol | str,
     config: ServeConfig | None = None,
-) -> PythonServer | JsonHTTPServer:
+) -> PythonServer | JsonHTTPServer | GrpcJsonPredictServer:
     actual = ServingProtocol(protocol)
     require_protocol(actual)
     if actual is ServingProtocol.PYTHON:
@@ -295,7 +411,9 @@ def serve_protocol(
         return serve_http(handler, config)
     if actual is ServingProtocol.WEBSOCKET:
         return serve_websocket(handler, config)
-    raise RuntimeError(f"{actual.value} serving uses manifest generation instead of in-process prediction")
+    if actual is ServingProtocol.GRPC:
+        return serve_grpc(handler, config)
+    raise RuntimeError(f"{actual.value} serving uses a native process wrapper instead of in-process prediction")
 
 
 def open_stream(source: str, kind: StreamSourceKind = StreamSourceKind.FILE, *, chunk_bytes: int = 4096) -> Iterator[StreamFrame]:
@@ -427,3 +545,27 @@ def _open_opencv_stream(source: str, kind: StreamSourceKind, *, chunk_bytes: int
                 index += 1
     finally:
         capture.release()
+
+
+def _optional_import_available(module: str) -> bool:
+    try:
+        __import__(module)
+    except ImportError:
+        return False
+    return True
+
+
+def _default_cpp_executable() -> Path:
+    candidates = [
+        Path(__file__).resolve().parent / "bin" / "underhfs_cpp_serve.exe",
+        Path(__file__).resolve().parent / "bin" / "underhfs_cpp_serve",
+        Path(__file__).resolve().parents[2] / "build" / "underhfs_cpp_serve.exe",
+        Path(__file__).resolve().parents[2] / "build" / "underhfs_cpp_serve",
+    ]
+    found = which("underhfs_cpp_serve")
+    if found:
+        candidates.insert(0, Path(found))
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]

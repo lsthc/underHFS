@@ -94,3 +94,19 @@ def test_network_offload_http_roundtrip():
             raise AssertionError("released network offload handle should not load")
     finally:
         server.close()
+
+
+def test_network_offload_rejects_corrupted_remote_payload():
+    server = NetworkOffloadServer(port=0).start()
+    try:
+        client = NetworkOffloadClient(server.url)
+        handle = client.offload_tensor(tensor([1.0, 2.0]))
+        server._store[handle.id]["data"] = [9.0, 9.0]
+        try:
+            client.load_tensor(handle)
+        except ValueError as exc:
+            assert "checksum mismatch" in str(exc)
+        else:
+            raise AssertionError("corrupted network offload payload should fail validation")
+    finally:
+        server.close()

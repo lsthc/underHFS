@@ -16,6 +16,16 @@ PYBIND11_MODULE(_core, m) {
 #else
   m.attr("cuda_enabled") = false;
 #endif
+#ifdef UNDERHFS_WITH_CUDNN
+  m.attr("cudnn_enabled") = true;
+#else
+  m.attr("cudnn_enabled") = false;
+#endif
+#ifdef UNDERHFS_WITH_NCCL
+  m.attr("nccl_enabled") = true;
+#else
+  m.attr("nccl_enabled") = false;
+#endif
 
   py::class_<underhfs::TensorCore>(m, "TensorCore")
       .def(py::init<std::vector<double>, std::vector<std::size_t>>())
@@ -35,6 +45,9 @@ PYBIND11_MODULE(_core, m) {
   m.def("cuda_add_f32", &underhfs::cuda_add_f32_host);
   m.def("cuda_fused_adamw_f32", &underhfs::cuda_fused_adamw_f32_host);
   m.def("cuda_attention_f32", &underhfs::cuda_attention_f32_host);
+#ifdef UNDERHFS_WITH_CUDNN
+  m.def("cudnn_conv2d_forward_f32", &underhfs::cudnn_conv2d_forward_f32_host);
+#endif
   m.def("cuda_allocator_stats", &underhfs::cuda_allocator_stats);
   m.def("cuda_empty_cache", &underhfs::cuda_empty_cache);
   m.def("cuda_stream_stats", &underhfs::cuda_stream_stats);

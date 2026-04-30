@@ -19,6 +19,8 @@ class CompilePolicy:
     enabled: bool = True
     partial_dynamic_shapes: bool = True
     guard_specialization: bool = True
+    native_required: bool = False
+    allow_fallback: bool = True
     fusion: tuple[FusionKind, ...] = field(
         default_factory=lambda: (FusionKind.ELEMENTWISE, FusionKind.REDUCTION, FusionKind.ATTENTION)
     )
@@ -156,6 +158,8 @@ class CompileReport:
                 "enabled": self.policy.enabled,
                 "partial_dynamic_shapes": self.policy.partial_dynamic_shapes,
                 "guard_specialization": self.policy.guard_specialization,
+                "native_required": self.policy.native_required,
+                "allow_fallback": self.policy.allow_fallback,
                 "fusion": [kind.value for kind in self.policy.fusion],
             },
             "graph": self.graph.to_dict(),
@@ -275,7 +279,9 @@ def analyze_execution(
 
     guards = _guards(args, kwargs or {})
     fusion_groups = _fusion_groups(graph, active_policy)
-    plan = lower_to_plan(graph, fusion_groups)
+    plan = lower_to_plan(graph, fusion_groups, policy=active_policy)
+    if active_policy.native_required and any(not kernel.backend.startswith("native-") for kernel in plan.kernels):
+        raise RuntimeError("compile native mode found unsupported fusion groups; fallback is disabled")
     return CompileReport(
         active_policy,
         graph,
@@ -291,18 +297,52 @@ def explain(fn: Callable[..., Any], *args: Any, policy: CompilePolicy | None = N
     return analyze_execution(result, args=args, kwargs=kwargs, policy=policy)
 
 
-def lower_to_plan(graph: GraphIR, fusion_groups: tuple[FusionGroup, ...]) -> ExecutablePlan:
-    kernels = tuple(
-        CompiledKernel(
-            name=f"kernel_{index}_{group.kind.value}",
-            kind=group.kind,
-            nodes=group.nodes,
-            backend="eager-fused-plan",
-            executable=True,
-        )
-        for index, group in enumerate(fusion_groups)
-    )
+def lower_to_plan(
+    graph: GraphIR,
+    fusion_groups: tuple[FusionGroup, ...],
+    *,
+    policy: CompilePolicy | None = None,
+) -> ExecutablePlan:
+    active_policy = policy or CompilePolicy()
+    kernels = tuple(_lowered_kernel(index, graph, group, active_policy) for index, group in enumerate(fusion_groups))
+    if not active_policy.allow_fallback and any(not kernel.backend.startswith("native-") for kernel in kernels):
+        raise RuntimeError("compile fallback is disabled, but a fusion group has no native backend")
     return ExecutablePlan(graph=graph, kernels=kernels)
+
+
+def _lowered_kernel(index: int, graph: GraphIR, group: FusionGroup, policy: CompilePolicy) -> CompiledKernel:
+    backend = _lowered_backend(graph, group, policy)
+    return CompiledKernel(
+        name=f"kernel_{index}_{group.kind.value}",
+        kind=group.kind,
+        nodes=group.nodes,
+        backend=backend,
+        executable=backend != "unsupported-native",
+    )
+
+
+def _lowered_backend(graph: GraphIR, group: FusionGroup, policy: CompilePolicy) -> str:
+    nodes = [node for node in graph.nodes if node.name in group.nodes]
+    if not nodes:
+        return "eager-fused-plan"
+    if group.kind is FusionKind.ATTENTION:
+        if _native_cuda_attention_supported(nodes):
+            return "native-cuda-attention"
+        return "unsupported-native" if policy.native_required or not policy.allow_fallback else "eager-fused-plan"
+    if group.kind in {FusionKind.ELEMENTWISE, FusionKind.REDUCTION}:
+        if all(node.device.startswith("cuda") and node.dtype == "fp32" for node in nodes):
+            return "native-cuda-fused"
+        return "unsupported-native" if policy.native_required or not policy.allow_fallback else "eager-fused-plan"
+    return "eager-fused-plan"
+
+
+def _native_cuda_attention_supported(nodes: list[IRNode]) -> bool:
+    shapes = [node.shape for node in nodes if node.shape]
+    return (
+        bool(shapes)
+        and all(len(shape) == 2 for shape in shapes)
+        and all(node.device.startswith("cuda") and node.dtype == "fp32" for node in nodes)
+    )
 
 
 def _looks_like_tensor(value: Any) -> bool:

@@ -1,5 +1,6 @@
 from underhfs.cuda import allocator_stats, empty_cache, stream_stats, synchronize
 from underhfs.native import probe, status
+from underhfs.nn import Conv2d
 from underhfs.tensor import DType, tensor
 
 
@@ -10,6 +11,8 @@ def test_native_contract_probe_when_available():
         return
     result = probe()
     assert isinstance(result["cuda_enabled"], bool)
+    assert isinstance(result["cudnn_enabled"], bool)
+    assert isinstance(result["nccl_enabled"], bool)
     assert result["add"] == [6.0, 8.0, 10.0, 12.0]
     assert result["matmul"] == [19.0, 22.0, 43.0, 50.0]
     assert result["sum"] == [134.0]
@@ -224,3 +227,24 @@ def test_native_cuda_attention_kernel_when_available():
     assert len(result) == 4
     assert result[0] > 1.0
     assert result[3] > 3.0
+
+
+def test_conv2d_cuda_requires_cudnn_for_native_path_when_available():
+    state = status()
+    if not state.cuda_enabled:
+        return
+    conv = Conv2d(1, 1, 2)
+    conv.weight = tensor([[[[1.0, 0.0], [0.0, 1.0]]]], requires_grad=False).cuda()
+    conv.bias = tensor([0.5], requires_grad=False).cuda()
+    x = tensor([[[[1.0, 2.0], [3.0, 4.0]]]], requires_grad=False).cuda()
+    if not state.cudnn_enabled:
+        try:
+            conv(x)
+        except RuntimeError as exc:
+            assert "UNDERHFS_WITH_CUDNN=ON" in str(exc)
+        else:
+            raise AssertionError("CUDA Conv2d should require cuDNN when CUDA tensors are used")
+        return
+    out = conv(x)
+    assert out.backend == "native_cudnn"
+    assert out.tolist() == [[[[5.5]]]]

@@ -40,11 +40,21 @@ def fused_adamw_kernel_status(params: Iterable[Tensor]) -> OptimizerKernelStatus
     if not parameters:
         return OptimizerKernelStatus("fused_adamw", "python", True, "no parameters")
     if all(param.device.kind == "cuda" for param in parameters):
+        if all(param.dtype.value == "fp32" for param in parameters):
+            try:
+                from underhfs.native import status, require_native
+
+                native = status()
+                core = require_native() if native.cuda_enabled else None
+                if native.cuda_enabled and core is not None and hasattr(core, "cuda_fused_adamw_f32"):
+                    return OptimizerKernelStatus("fused_adamw", "cuda-native", True, "native CUDA fused AdamW fp32")
+            except Exception:
+                pass
         return OptimizerKernelStatus(
             "fused_adamw",
-            "cuda-native",
-            False,
-            "native fused AdamW CUDA kernel is reserved; Python fused step preserves CUDA metadata",
+            "python",
+            True,
+            "Python AdamW update preserves CUDA metadata for non-fp32 tensors",
         )
     return OptimizerKernelStatus("fused_adamw", "python", True, "CPU/Python fused update loop")
 

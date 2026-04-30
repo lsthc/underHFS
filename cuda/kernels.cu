@@ -2,6 +2,9 @@
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#ifdef UNDERHFS_WITH_CUDNN
+#include <cudnn.h>
+#endif
 
 #include <numeric>
 #include <mutex>
@@ -200,6 +203,14 @@ void check_cublas(cublasStatus_t status, const char* context) {
                              std::to_string(static_cast<int>(status)));
   }
 }
+
+#ifdef UNDERHFS_WITH_CUDNN
+void check_cudnn(cudnnStatus_t status, const char* context) {
+  if (status != CUDNN_STATUS_SUCCESS) {
+    throw std::runtime_error(std::string(context) + ": " + cudnnGetErrorString(status));
+  }
+}
+#endif
 
 class CublasHandle {
  public:
@@ -986,6 +997,182 @@ std::vector<float> cuda_attention_f32_host(
   cuda_allocator().release(d_v, bytes);
   cuda_allocator().release(d_out, bytes);
   return out;
+}
+
+std::vector<float> cudnn_conv2d_forward_f32_host(
+    const std::vector<float>& input,
+    const std::vector<float>& weight,
+    const std::vector<float>& bias,
+    int batch,
+    int in_channels,
+    int height,
+    int width,
+    int out_channels,
+    int kernel_h,
+    int kernel_w,
+    int stride_h,
+    int stride_w,
+    int pad_h,
+    int pad_w) {
+  if (batch <= 0 || in_channels <= 0 || height <= 0 || width <= 0 || out_channels <= 0 ||
+      kernel_h <= 0 || kernel_w <= 0 || stride_h <= 0 || stride_w <= 0) {
+    throw std::invalid_argument("cudnn_conv2d_forward_f32 received invalid dimensions");
+  }
+  const int out_h = (height + 2 * pad_h - kernel_h) / stride_h + 1;
+  const int out_w = (width + 2 * pad_w - kernel_w) / stride_w + 1;
+  if (out_h <= 0 || out_w <= 0) {
+    throw std::invalid_argument("cudnn_conv2d_forward_f32 produced an empty output shape");
+  }
+  const std::size_t expected_input = static_cast<std::size_t>(batch) * in_channels * height * width;
+  const std::size_t expected_weight = static_cast<std::size_t>(out_channels) * in_channels * kernel_h * kernel_w;
+  if (input.size() != expected_input || weight.size() != expected_weight) {
+    throw std::invalid_argument("cudnn_conv2d_forward_f32 payload size does not match tensor shapes");
+  }
+  if (!bias.empty() && bias.size() != static_cast<std::size_t>(out_channels)) {
+    throw std::invalid_argument("cudnn_conv2d_forward_f32 bias size must match out_channels");
+  }
+#ifdef UNDERHFS_WITH_CUDNN
+  const std::size_t input_bytes = input.size() * sizeof(float);
+  const std::size_t weight_bytes = weight.size() * sizeof(float);
+  const std::size_t bias_bytes = bias.size() * sizeof(float);
+  const std::size_t output_size = static_cast<std::size_t>(batch) * out_channels * out_h * out_w;
+  const std::size_t output_bytes = output_size * sizeof(float);
+  std::vector<float> out(output_size, 0.0f);
+  float* d_input = nullptr;
+  float* d_weight = nullptr;
+  float* d_bias = nullptr;
+  float* d_out = nullptr;
+  cudnnHandle_t handle = nullptr;
+  cudnnTensorDescriptor_t input_desc = nullptr;
+  cudnnFilterDescriptor_t weight_desc = nullptr;
+  cudnnConvolutionDescriptor_t conv_desc = nullptr;
+  cudnnTensorDescriptor_t output_desc = nullptr;
+  cudnnTensorDescriptor_t bias_desc = nullptr;
+  void* workspace = nullptr;
+  std::size_t workspace_bytes = 0;
+
+  d_input = cuda_allocator().allocate(input_bytes, "cudnn conv2d input cudaMalloc");
+  d_weight = cuda_allocator().allocate(weight_bytes, "cudnn conv2d weight cudaMalloc");
+  d_out = cuda_allocator().allocate(output_bytes, "cudnn conv2d out cudaMalloc");
+  if (!bias.empty()) {
+    d_bias = cuda_allocator().allocate(bias_bytes, "cudnn conv2d bias cudaMalloc");
+  }
+  try {
+    check_cuda(cudaMemcpyAsync(d_input, input.data(), input_bytes, cudaMemcpyHostToDevice,
+                               cuda_runtime().stream()),
+               "cudnn conv2d input copy");
+    check_cuda(cudaMemcpyAsync(d_weight, weight.data(), weight_bytes, cudaMemcpyHostToDevice,
+                               cuda_runtime().stream()),
+               "cudnn conv2d weight copy");
+    cuda_runtime().record_copy();
+    cuda_runtime().record_copy();
+    if (!bias.empty()) {
+      check_cuda(cudaMemcpyAsync(d_bias, bias.data(), bias_bytes, cudaMemcpyHostToDevice,
+                                 cuda_runtime().stream()),
+                 "cudnn conv2d bias copy");
+      cuda_runtime().record_copy();
+    }
+    check_cudnn(cudnnCreate(&handle), "cudnnCreate");
+    check_cudnn(cudnnSetStream(handle, cuda_runtime().stream()), "cudnnSetStream");
+    check_cudnn(cudnnCreateTensorDescriptor(&input_desc), "cudnnCreateTensorDescriptor(input)");
+    check_cudnn(cudnnCreateFilterDescriptor(&weight_desc), "cudnnCreateFilterDescriptor(weight)");
+    check_cudnn(cudnnCreateConvolutionDescriptor(&conv_desc), "cudnnCreateConvolutionDescriptor");
+    check_cudnn(cudnnCreateTensorDescriptor(&output_desc), "cudnnCreateTensorDescriptor(output)");
+    check_cudnn(cudnnSetTensor4dDescriptor(input_desc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT,
+                                           batch, in_channels, height, width),
+                "cudnnSetTensor4dDescriptor(input)");
+    check_cudnn(cudnnSetFilter4dDescriptor(weight_desc, CUDNN_DATA_FLOAT, CUDNN_TENSOR_NCHW,
+                                           out_channels, in_channels, kernel_h, kernel_w),
+                "cudnnSetFilter4dDescriptor(weight)");
+    check_cudnn(cudnnSetConvolution2dDescriptor(conv_desc, pad_h, pad_w, stride_h, stride_w, 1, 1,
+                                                CUDNN_CROSS_CORRELATION, CUDNN_DATA_FLOAT),
+                "cudnnSetConvolution2dDescriptor");
+    check_cudnn(cudnnSetTensor4dDescriptor(output_desc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT,
+                                           batch, out_channels, out_h, out_w),
+                "cudnnSetTensor4dDescriptor(output)");
+    cudnnConvolutionFwdAlgo_t algo = CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM;
+    check_cudnn(cudnnGetConvolutionForwardWorkspaceSize(handle, input_desc, weight_desc, conv_desc,
+                                                        output_desc, algo, &workspace_bytes),
+                "cudnnGetConvolutionForwardWorkspaceSize");
+    if (workspace_bytes > 0) {
+      check_cuda(cudaMalloc(&workspace, workspace_bytes), "cudnn conv2d workspace cudaMalloc");
+    }
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+    check_cudnn(cudnnConvolutionForward(handle, &alpha, input_desc, d_input, weight_desc, d_weight,
+                                        conv_desc, algo, workspace, workspace_bytes, &beta,
+                                        output_desc, d_out),
+                "cudnnConvolutionForward");
+    cuda_runtime().record_launch();
+    if (!bias.empty()) {
+      check_cudnn(cudnnCreateTensorDescriptor(&bias_desc), "cudnnCreateTensorDescriptor(bias)");
+      check_cudnn(cudnnSetTensor4dDescriptor(bias_desc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT,
+                                             1, out_channels, 1, 1),
+                  "cudnnSetTensor4dDescriptor(bias)");
+      check_cudnn(cudnnAddTensor(handle, &alpha, bias_desc, d_bias, &alpha, output_desc, d_out),
+                  "cudnnAddTensor(bias)");
+      cuda_runtime().record_launch();
+    }
+    check_cuda(cudaMemcpyAsync(out.data(), d_out, output_bytes, cudaMemcpyDeviceToHost,
+                               cuda_runtime().stream()),
+               "cudnn conv2d output copy");
+    cuda_runtime().record_copy();
+    cuda_runtime().synchronize("cudnn conv2d sync");
+  } catch (...) {
+    if (workspace != nullptr) cudaFree(workspace);
+    if (bias_desc != nullptr) cudnnDestroyTensorDescriptor(bias_desc);
+    if (output_desc != nullptr) cudnnDestroyTensorDescriptor(output_desc);
+    if (conv_desc != nullptr) cudnnDestroyConvolutionDescriptor(conv_desc);
+    if (weight_desc != nullptr) cudnnDestroyFilterDescriptor(weight_desc);
+    if (input_desc != nullptr) cudnnDestroyTensorDescriptor(input_desc);
+    if (handle != nullptr) cudnnDestroy(handle);
+    cuda_allocator().release(d_input, input_bytes);
+    cuda_allocator().release(d_weight, weight_bytes);
+    if (d_bias != nullptr) cuda_allocator().release(d_bias, bias_bytes);
+    cuda_allocator().release(d_out, output_bytes);
+    throw;
+  }
+  if (workspace != nullptr) cudaFree(workspace);
+  if (bias_desc != nullptr) cudnnDestroyTensorDescriptor(bias_desc);
+  cudnnDestroyTensorDescriptor(output_desc);
+  cudnnDestroyConvolutionDescriptor(conv_desc);
+  cudnnDestroyFilterDescriptor(weight_desc);
+  cudnnDestroyTensorDescriptor(input_desc);
+  cudnnDestroy(handle);
+  cuda_allocator().release(d_input, input_bytes);
+  cuda_allocator().release(d_weight, weight_bytes);
+  if (d_bias != nullptr) cuda_allocator().release(d_bias, bias_bytes);
+  cuda_allocator().release(d_out, output_bytes);
+  return out;
+#else
+  std::vector<float> out(static_cast<std::size_t>(batch) * out_channels * out_h * out_w, 0.0f);
+  for (int n = 0; n < batch; ++n) {
+    for (int oc = 0; oc < out_channels; ++oc) {
+      for (int oh = 0; oh < out_h; ++oh) {
+        for (int ow = 0; ow < out_w; ++ow) {
+          float acc = bias.empty() ? 0.0f : bias[oc];
+          for (int ic = 0; ic < in_channels; ++ic) {
+            for (int kh = 0; kh < kernel_h; ++kh) {
+              for (int kw = 0; kw < kernel_w; ++kw) {
+                const int ih = oh * stride_h + kh - pad_h;
+                const int iw = ow * stride_w + kw - pad_w;
+                if (ih >= 0 && ih < height && iw >= 0 && iw < width) {
+                  const std::size_t input_index =
+                      ((static_cast<std::size_t>(n) * in_channels + ic) * height + ih) * width + iw;
+                  const std::size_t weight_index =
+                      ((static_cast<std::size_t>(oc) * in_channels + ic) * kernel_h + kh) * kernel_w + kw;
+                  acc += input[input_index] * weight[weight_index];
+                }
+              }
+            }
+          }
+          out[((static_cast<std::size_t>(n) * out_channels + oc) * out_h + oh) * out_w + ow] = acc;
+        }
+      }
+    }
+  }
+  return out;
+#endif
 }
 
 std::unordered_map<std::string, std::size_t> cuda_allocator_stats() {

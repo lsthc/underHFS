@@ -233,14 +233,6 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
-def _not_implemented(name: str):
-    def run(_: argparse.Namespace) -> int:
-        print(f"underhfs {name}: command surface is reserved; implementation is pending")
-        return 2
-
-    return run
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="underhfs")
     parser.add_argument("--version", action="version", version=f"underhfs {__version__}")

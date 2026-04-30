@@ -186,22 +186,22 @@ def capability_matrix() -> list[KernelCapability]:
                     "conv2d",
                     "cuda",
                     (DType.FP32,),
-                    "cudnn-reserved",
+                    "native-cudnn" if native.cudnn_enabled else "requires-cudnn",
                     "python-autograd",
                 ),
                 KernelCapability(
                     "attention",
                     "cuda",
                     (DType.FP32,),
-                    "fusion-plan-reserved",
+                    "native-cuda-attention",
                     "python-autograd",
                 ),
                 KernelCapability(
                     "fused_adamw",
                     "cuda",
                     (DType.FP32, DType.FP16, DType.BF16),
-                    "native-kernel-reserved",
-                    "optimizer-state-preserving-python",
+                    "native-cuda-fp32/python-other-dtypes",
+                    "optimizer-state-preserving",
                 ),
             ]
         )

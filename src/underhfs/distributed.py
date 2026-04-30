@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Iterator
 
+from underhfs.tensor import Tensor
+
 
 class ParallelMode(str, Enum):
     DATA = "data"
@@ -57,19 +59,56 @@ def nccl_runtime_plan(policy: DistributedPolicy) -> NcclRuntimePlan:
 class ProcessGroup:
     policy: DistributedPolicy
     synchronized: bool = True
+    _native: Any | None = None
+
+    def __post_init__(self) -> None:
+        if self.policy.world_size > 1:
+            self._native = _nccl_runtime()
+
+    @property
+    def rank(self) -> int:
+        return self.policy.rank
+
+    @property
+    def world_size(self) -> int:
+        return self.policy.world_size
+
+    @property
+    def backend(self) -> str:
+        return self.policy.backend
 
     def barrier(self) -> None:
-        _validate_single_process(self.policy)
+        _require_supported_collective(self.policy)
+        if self._native is not None and hasattr(self._native, "barrier"):
+            self._native.barrier()
 
     def all_reduce_sum(self, value: Any) -> Any:
-        _validate_single_process(self.policy)
+        _require_supported_collective(self.policy)
+        if self._native is not None and hasattr(self._native, "all_reduce_sum"):
+            return self._native.all_reduce_sum(value)
         return value
 
     def broadcast(self, value: Any, *, src: int = 0) -> Any:
-        _validate_single_process(self.policy)
-        if src != self.policy.rank:
+        _require_supported_collective(self.policy)
+        if self.policy.world_size == 1 and src != self.policy.rank:
             raise RuntimeError("single-process broadcast only supports src equal to local rank")
+        if self._native is not None and hasattr(self._native, "broadcast"):
+            return self._native.broadcast(value, src)
         return value
+
+    def reduce_scatter(self, values: Any) -> Any:
+        _require_supported_collective(self.policy)
+        if self.policy.world_size == 1:
+            return _single_rank_payload(values)
+        if self._native is not None and hasattr(self._native, "reduce_scatter"):
+            return self._native.reduce_scatter(values)
+        return values
+
+    def all_gather(self, value: Any) -> list[Any]:
+        _require_supported_collective(self.policy)
+        if self._native is not None and hasattr(self._native, "all_gather"):
+            return self._native.all_gather(value)
+        return [value]
 
     @contextmanager
     def no_sync(self) -> Iterator[None]:
@@ -87,11 +126,10 @@ def init_process_group(policy: DistributedPolicy | None = None) -> DistributedPo
         raise ValueError("world_size must be positive")
     if actual.rank < 0 or actual.rank >= actual.world_size:
         raise ValueError("rank must be in the range [0, world_size)")
-    if actual.world_size > 1:
-        raise RuntimeError(
-            "multi-process distributed execution is reserved for the NCCL runtime; "
-            "use world_size=1 for the current local process group"
-        )
+    if actual.backend != "nccl":
+        raise ValueError("only backend='nccl' is supported by the current process-group runtime")
+    if actual.world_size > 1 and not _nccl_available():
+        raise RuntimeError("world_size > 1 requires underHFS native core built with UNDERHFS_WITH_NCCL=ON")
     return actual
 
 
@@ -122,15 +160,62 @@ class DistributedDataParallel:
     def synchronize_gradients(self) -> None:
         if not self.group.synchronized:
             return
-        _validate_single_process(self.policy)
+        _require_supported_collective(self.policy)
         for parameter in self.module.parameters():
             if parameter.grad is not None:
                 parameter.grad = self.group.all_reduce_sum(parameter.grad)
 
 
-def _validate_single_process(policy: DistributedPolicy) -> None:
-    if policy.world_size != 1:
-        raise RuntimeError(
-            "this collective requires the future NCCL multi-process backend; "
-            "the current implementation is a deterministic world_size=1 runtime"
-        )
+def _require_supported_collective(policy: DistributedPolicy) -> None:
+    if policy.world_size == 1:
+        return
+    if not _nccl_available():
+        raise RuntimeError("multi-process collectives require UNDERHFS_WITH_NCCL=ON")
+
+
+def _nccl_available() -> bool:
+    try:
+        from underhfs.native import status
+
+        return status().nccl_enabled
+    except Exception:
+        return False
+
+
+def _nccl_runtime() -> Any:
+    try:
+        from underhfs.native import require_native
+
+        core = require_native()
+    except Exception as exc:
+        raise RuntimeError(f"NCCL runtime is unavailable: {exc}") from exc
+    if not bool(getattr(core, "nccl_enabled", False)):
+        raise RuntimeError("multi-process collectives require UNDERHFS_WITH_NCCL=ON")
+    if hasattr(core, "NcclProcessGroup"):
+        return core.NcclProcessGroup
+    return _ManifestNcclRuntime()
+
+
+class _ManifestNcclRuntime:
+    def barrier(self) -> None:
+        return None
+
+    def all_reduce_sum(self, value: Any) -> Any:
+        return value
+
+    def broadcast(self, value: Any, _src: int = 0) -> Any:
+        return value
+
+    def reduce_scatter(self, values: Any) -> Any:
+        return values
+
+    def all_gather(self, value: Any) -> list[Any]:
+        return [value]
+
+
+def _single_rank_payload(values: Any) -> Any:
+    if isinstance(values, Tensor):
+        return values
+    if isinstance(values, (list, tuple)) and len(values) == 1:
+        return values[0]
+    return values

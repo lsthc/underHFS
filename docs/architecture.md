@@ -11,14 +11,14 @@ underHFS is split into four layers:
 4. Runtime/compiler: graph IR, partial dynamic shapes, fusion, stream-aware
    scheduling, hierarchical memory, offload, recompute, and distributed policies.
 
-The current Python fallback is intentionally small but executable. It anchors
-the public semantics while the C++/CUDA backend comes online.
+The Python runtime is intentionally small but executable. It anchors public
+semantics while the C++/CUDA backend provides native fast paths for supported
+dense tensor operations.
 
 ## Native core contract
 
-The native `_core` extension exposes `TensorCore` as the first C++ execution
-object. Its initial contract mirrors the Python fallback for contiguous dense
-CPU tensors:
+The native `_core` extension exposes `TensorCore` as the C++ execution object
+for contiguous dense CPU tensors:
 
 - storage and shape validation
 - contiguous stride derivation
@@ -32,3 +32,7 @@ Native CPU availability is intentionally separate from CUDA availability.
 The `_core.cuda_enabled` flag is false unless the extension was built with
 `UNDERHFS_WITH_CUDA=ON`; `.cuda()` must fail clearly when only CPU native code is
 present.
+
+CUDA builds add persistent GPU tensor storage, cuBLAS matmul, custom fp32/fp16/bf16
+elementwise kernels, fp32 reduction, fused AdamW fp32, and fp32 attention. cuDNN
+and NCCL paths are explicit CMake opt-ins and report capability through `_core`.

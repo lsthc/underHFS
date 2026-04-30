@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from threading import Thread
 from typing import Any
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
@@ -335,8 +336,18 @@ class NetworkOffloadClient:
             headers={"Content-Type": "application/json"},
             method=method,
         )
-        with urlopen(request, timeout=5) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        try:
+            with urlopen(request, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            raw = exc.read().decode("utf-8")
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                raise RuntimeError(f"HTTP {exc.code}: {raw}") from exc
+            if isinstance(payload, dict) and "error" in payload:
+                raise RuntimeError(str(payload["error"])) from exc
+            raise RuntimeError(f"HTTP {exc.code}") from exc
         if isinstance(payload, dict) and "error" in payload:
             raise RuntimeError(str(payload["error"]))
         return payload

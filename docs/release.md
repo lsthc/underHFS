@@ -1,7 +1,7 @@
 # underHFS Release and Wheel Matrix
 
-underHFS publishes a CPU source wheel first and reserves CUDA wheels for native
-runtime builds that are tied to a CUDA Toolkit major/minor line.
+underHFS publishes CPU and CUDA native wheels tied to a Python and CUDA Toolkit
+major/minor line.
 
 ## Local Build Commands
 
@@ -33,7 +33,7 @@ scripts\release_check.bat
 
 | Wheel | Python | Platform | Native | CUDA |
 | --- | --- | --- | --- | --- |
-| `underhfs-*-py3-none-any.whl` | 3.13 | any | Python fallback | none |
+| `underhfs-*-py3-none-any.whl` | 3.13 | any | Portable Python runtime | none |
 | `underhfs-*-cp313-win_amd64.whl` | 3.13 | Windows x64 | C++20 | none |
 | `underhfs-*-cp313-win_amd64.cuda132.whl` | 3.13 | Windows x64 | C++20/CUDA | CUDA 13.2 |
 

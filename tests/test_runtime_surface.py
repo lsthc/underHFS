@@ -2,6 +2,9 @@ import json
 import base64
 import os
 import socket
+import sys
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.request import Request, urlopen
 
 from underhfs.compile import CompilePolicy, FusionKind, compile, explain, lower_to_plan
@@ -18,7 +21,9 @@ from underhfs.serve import (
     protocol_capabilities,
     require_protocol,
     serve,
+    serve_cpp,
     serve_cpp_manifest,
+    serve_grpc,
     serve_grpc_manifest,
     serve_http,
     serve_protocol,
@@ -77,6 +82,33 @@ def test_compile_lower_to_eager_fused_plan():
     assert any(kernel.executable for kernel in plan.kernels)
 
 
+def test_compile_native_policy_reports_unsupported_fallback_error():
+    def fn(x):
+        return (x * x + x).sum()
+
+    try:
+        explain(fn, tensor([1.0, 2.0]), policy=CompilePolicy(native_required=True, allow_fallback=False))
+    except RuntimeError as exc:
+        assert "unsupported fusion groups" in str(exc) or "fallback is disabled" in str(exc)
+    else:
+        raise AssertionError("native compile mode should reject CPU fallback fusion groups")
+
+
+def test_compile_native_attention_accepts_mixed_2d_shapes():
+    from underhfs.compile import GraphIR, FusionGroup
+
+    graph = GraphIR()
+    graph.add(name="qk", op="matmul", inputs=("q", "k"), outputs=("qk",), shape=(3, 3), dtype="fp32", device="cuda:0")
+    graph.add(name="weights", op="softmax", inputs=("qk",), outputs=("weights",), shape=(3, 3), dtype="fp32", device="cuda:0")
+    graph.add(name="out", op="matmul", inputs=("weights", "v"), outputs=("out",), shape=(3, 5), dtype="fp32", device="cuda:0")
+    plan = lower_to_plan(
+        graph,
+        (FusionGroup(FusionKind.ATTENTION, ("qk", "weights", "out")),),
+        policy=CompilePolicy(native_required=True, allow_fallback=False),
+    )
+    assert plan.kernels[0].backend == "native-cuda-attention"
+
+
 def test_compile_guard_specialization_cache_tracks_hits_and_misses():
     @compile(policy=CompilePolicy(enabled=True, guard_specialization=True))
     def fn(x):
@@ -107,8 +139,21 @@ def test_data_ddp_and_python_server_surfaces():
     ddp = DistributedDataParallel(Linear(1, 1))
     assert ddp.policy.world_size == 1
     group = process_group(DistributedPolicy())
+    assert group.rank == 0
+    assert group.world_size == 1
+    assert group.backend == "nccl"
     assert group.all_reduce_sum(3) == 3
+    assert group.broadcast("ok") == "ok"
+    assert group.reduce_scatter(["only-rank"]) == "only-rank"
+    assert group.all_gather("ok") == ["ok"]
     assert nccl_runtime_plan(DistributedPolicy(world_size=2)).to_dict()["backend"] == "nccl"
+    if not status().nccl_enabled:
+        try:
+            process_group(DistributedPolicy(world_size=2))
+        except RuntimeError as exc:
+            assert "UNDERHFS_WITH_NCCL=ON" in str(exc)
+        else:
+            raise AssertionError("world_size > 1 should require NCCL availability")
     with ddp.no_sync():
         assert ddp.group.synchronized is False
     assert ddp.group.synchronized is True
@@ -120,6 +165,51 @@ def test_data_ddp_and_python_server_surfaces():
     require_protocol(ServingProtocol.GRPC)
     assert serve_grpc_manifest().to_dict()["protocol"] == "grpc"
     assert serve_cpp_manifest().to_dict()["protocol"] == "cpp"
+    try:
+        grpc_server = serve_grpc(lambda payload: payload)
+    except RuntimeError as exc:
+        assert "grpcio" in str(exc)
+    else:
+        assert grpc_server.predict("ok") == "ok"
+        grpc_server.close()
+
+
+def test_grpc_server_starts_when_dependency_is_available():
+    try:
+        server = serve_grpc(lambda payload: payload["value"], ServeConfig(port=0)).start()
+    except RuntimeError as exc:
+        assert "grpcio" in str(exc)
+        return
+    try:
+        import grpc
+
+        with grpc.insecure_channel(f"{server.host}:{server.port}") as channel:
+            call = channel.unary_unary("/underhfs.grpc.JsonPredictService/Predict")
+            response = call(json.dumps({"value": "ok"}).encode("utf-8"), timeout=2)
+        assert json.loads(response.decode("utf-8")) == {"result": "ok"}
+    finally:
+        server.close()
+
+
+def test_cpp_server_wrapper_uses_json_predict_loop():
+    with TemporaryDirectory() as tmp:
+        script = Path(tmp) / "underhfs_cpp_serve.py"
+        script.write_text(
+            "import json, sys\n"
+            "for line in sys.stdin:\n"
+            "    payload = json.loads(line)\n"
+            "    if payload.get('op') == 'exit': break\n"
+            "    if payload.get('op') == 'health': print(json.dumps({'status': 'ok'}), flush=True); continue\n"
+            "    if payload.get('op') == 'predict': print(json.dumps({'result': payload.get('payload')}), flush=True); continue\n"
+            "    print(json.dumps({'error': 'unsupported op'}), flush=True)\n",
+            encoding="utf-8",
+        )
+        server = serve_cpp([sys.executable, str(script)])
+        try:
+            assert server.request({"op": "health"}) == {"status": "ok"}
+            assert server.predict({"value": "ok"}) == {"value": "ok"}
+        finally:
+            server.close()
 
 
 def test_json_http_server_predict_surface():

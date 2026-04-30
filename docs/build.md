@@ -13,7 +13,7 @@ The current machine has Python 3.13.12, Git, CMake, Visual Studio Build Tools,
 Ninja, and CUDA Toolkit 13.2. The native `_core` extension builds successfully
 through `scikit-build-core` and pybind11 with CUDA enabled.
 
-## Python fallback development
+## Portable Python Runtime Development
 
 ```powershell
 $env:PYTHONPATH = "src"
@@ -62,5 +62,5 @@ python -m pip install -e . --config-settings=cmake.define.UNDERHFS_WITH_CUDA=ON 
 `UNDERHFS_WITH_CUDNN=ON` requires a CMake-visible `CUDA::cudnn` target.
 `UNDERHFS_WITH_NCCL=ON` searches `NCCL_ROOT`, `NCCL_ROOT\include`, and
 `NCCL_ROOT\lib` for `nccl.h` and the NCCL library. Default local builds keep
-both options off so the fallback and CUDA core kernels continue to build on a
-single Windows laptop setup.
+both options off so the portable Python runtime and CUDA core kernels continue
+to build on a single Windows laptop setup.

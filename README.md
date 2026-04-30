@@ -9,10 +9,9 @@ runtime.
 
 underHFS is a PyTorch-style AI framework foundation for people who want to own
 the stack: tensors, autograd, neural network modules, optimizers, runtime
-policies, serving, and the path toward native C++/CUDA execution. It starts with
-a working Python fallback backend today and grows toward a high-performance
-CUDA-first engine for LLMs, multimodal models, vision systems, streaming
-inference, and game-learning agents.
+policies, serving, and native C++/CUDA execution. It includes a working Python
+runtime plus native fast paths, with CUDA-first expansion for LLMs, multimodal
+models, vision systems, streaming inference, and game-learning agents.
 
 This is not a wrapper around PyTorch. PyTorch and NumPy are allowed only as
 external test and benchmark oracles.
@@ -21,14 +20,14 @@ external test and benchmark oracles.
 
 - **Own the runtime**. keep the public API Torch-like while building the core
   around underHFS storage, autograd, scheduling, and memory policies.
-- **Train beyond one memory tier**. design for VRAM, RAM, NVMe, and future
-  distributed tiers through explicit runtime policies.
+- **Train beyond one memory tier**. design for VRAM, RAM, NVMe, network offload,
+  and distributed tiers through explicit runtime policies.
 - **Go CUDA-first**. prepare the native backend for C++20, pybind11, CUDA 13.x,
   cuBLAS, cuDNN, NCCL, custom kernels, and stream-aware scheduling.
 - **Support real model families**. provide the early blocks for transformers,
   convolutional models, RL-style heads, serving, and live-streaming workflows.
-- **Stay inspectable**. ship a small executable fallback implementation that can
-  be tested locally before the native backend is installed.
+- **Stay inspectable**. keep the eager Python runtime and native backends small
+  enough to test locally and diagnose directly.
 
 ## What Works Now
 
@@ -46,7 +45,8 @@ external test and benchmark oracles.
   commands including a tiny TransformerLM training path.
 - Byte-level tokenizer and greedy TransformerLM generation for bootstrap text
   generation smoke tests.
-- Hierarchical memory planner for VRAM/RAM/NVMe placement policy simulation.
+- Hierarchical memory planner for VRAM/RAM/NVMe placement decisions, NVMe tensor
+  offload, prefetch verification, and HTTP JSON network offload.
 - CUDA diagnostics report device memory and derive initial VRAM/RAM planner
   budgets from the local machine.
 - CLI microbenchmarks report CPU and CUDA add/matmul throughput with backend
@@ -94,12 +94,13 @@ external test and benchmark oracles.
 - Memory benchmarks now include a tier-pressure report showing placement,
   offload events, OOM avoidance, and bottleneck tiers.
 - Distributed execution has a deterministic world-size-1 process group with
-  barrier, broadcast, all-reduce, DDP state/parameter passthrough, and `no_sync`
-  semantics while multi-process NCCL remains reserved.
+  barrier, broadcast, all-reduce, reduce-scatter, all-gather, DDP
+  state/parameter passthrough, and `no_sync` semantics. Multi-process groups
+  require a native build with `UNDERHFS_WITH_NCCL=ON`.
 - Serving exposes protocol capabilities, routes both `/predict` and
-  `/v1/predict` for JSON HTTP, provides a real standard-library WebSocket
-  prediction loop, and emits gRPC/C++ serving manifests for native deployment
-  paths.
+  `/v1/predict` for JSON HTTP, provides a standard-library WebSocket prediction
+  loop, an optional `grpcio` JSON Predict service, and a C++ JSON stdin/stdout
+  serving process wrapper.
 - Forward-mode `autograd.jvp` is available for core eager Tensor arithmetic,
   matmul, reductions, view/reshape/slice, softmax, and common elementwise ops.
 - Activation checkpointing now exposes an eager recompute contract plus
@@ -118,9 +119,9 @@ external test and benchmark oracles.
   checksum validation.
 - ONNX export/import keeps the `underhfs.onnx-lite` fallback and uses a real
   optional `onnx` protobuf path when the dependency is installed.
-- Serving includes JSON HTTP and a standard-library WebSocket prediction loop;
-  gRPC remains optional-dependency gated, and the build now emits a minimal C++
-  stdin/stdout serving executable.
+- Serving includes JSON HTTP, a standard-library WebSocket prediction loop,
+  optional-dependency-gated gRPC, and a C++ stdin/stdout serving executable plus
+  Python process wrapper.
 - File streaming remains built in, OpenCV webcam/file and FFmpeg RTSP/HLS paths
   are dependency-gated adapters, and WebRTC stays an explicit optional transport
   boundary.
@@ -131,8 +132,9 @@ external test and benchmark oracles.
 
 underHFS is organized around the same surfaces a full-stack AI platform needs:
 
-- `underhfs.tensor`. Tensor, dtype, device, layout, fallback operations.
-- `underhfs.autograd`. eager backward and future forward-mode/JVP entrypoints.
+- `underhfs.tensor`. Tensor, dtype, device, layout, eager operations, and native
+  fast paths.
+- `underhfs.autograd`. eager backward and forward-mode/JVP entrypoints.
 - `underhfs.nn`. modules, parameters, transformer blocks, CNN/RL foundations.
 - `underhfs.optim`. SGD, AdamW, fused optimizer and ZeRO-aware optimizer shapes.
 - `underhfs.data`. Dataset/DataLoader primitives.
@@ -145,7 +147,7 @@ underHFS is organized around the same surfaces a full-stack AI platform needs:
 
 ## Quick Start
 
-Use the source tree directly while the native backend is still being brought up:
+Use the source tree directly during local development:
 
 ```powershell
 $env:PYTHONPATH = "src"
@@ -176,7 +178,7 @@ before `pytest` is installed.
 
 ## Native Backend Path
 
-The native backend is not required for the Python fallback, but CUDA builds now
+The native backend is not required for the portable Python runtime, but CUDA builds now
 exercise real kernels for fp32 add, mul, sum, matmul, fused AdamW, and
 scaled-dot-product attention.
 
