@@ -59,7 +59,7 @@ external test and benchmark oracles.
   matmul, and sum when available.
 - CUDA-enabled native builds expose and probe a real GPU `cuda_add_f32` kernel.
 - CUDA `CudaTensorF32` provides persistent GPU tensor storage with device
-  allocation, host transfer, add, and 2D matmul.
+  allocation, host transfer, add, mul, sum, and 2D matmul.
 - Python Tensor `.cuda()` now creates native CUDA storage for dense fp32 tensors,
   and CUDA Tensor add/matmul use the native GPU storage path.
 - CUDA matmul uses cuBLAS with a cached per-thread handle while preserving

@@ -15,6 +15,8 @@ def test_native_contract_probe_when_available():
     if result["cuda_enabled"]:
         assert result["cuda_add_f32"] == [4.0, 6.0]
         assert result["cuda_tensor_add_f32"] == [4.0, 6.0]
+        assert result["cuda_tensor_mul_f32"] == [3.0, 8.0]
+        assert result["cuda_tensor_sum_f32"] == [3.0]
         assert result["cuda_tensor_matmul_f32"] == [19.0, 22.0, 43.0, 50.0]
 
 
@@ -47,6 +49,20 @@ def test_tensor_uses_native_cuda_add_when_available():
     assert out.backend == "native_cuda"
     assert str(out.device) == "cuda:0"
     assert out.tolist() == [4.0, 6.0]
+
+
+def test_tensor_uses_native_cuda_mul_and_sum_when_available():
+    state = status()
+    if not state.cuda_enabled:
+        return
+    left = tensor([1.0, 2.0, 3.0]).cuda()
+    right = tensor([4.0, 5.0, 6.0]).cuda()
+    product = left * right
+    total = product.sum()
+    assert product.backend == "native_cuda"
+    assert total.backend == "native_cuda"
+    assert product.tolist() == [4.0, 10.0, 18.0]
+    assert total.tolist() == 32.0
 
 
 def test_tensor_uses_native_cuda_matmul_when_available():
@@ -88,6 +104,7 @@ def test_cuda_matmul_backward_preserves_device_when_available():
     left = tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True).cuda()
     right = tensor([[5.0, 6.0], [7.0, 8.0]], requires_grad=True).cuda()
     loss = (left @ right).sum()
+    assert loss.backend == "native_cuda"
     assert str(loss.device) == "cuda:0"
     loss.backward()
     assert left.grad is not None

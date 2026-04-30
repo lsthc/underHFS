@@ -39,6 +39,8 @@ PYBIND11_MODULE(_core, m) {
       .def("numel", &underhfs::CudaTensorF32::numel)
       .def("to_host", &underhfs::CudaTensorF32::to_host)
       .def("add", &underhfs::CudaTensorF32::add)
-      .def("matmul", &underhfs::CudaTensorF32::matmul);
+      .def("mul", &underhfs::CudaTensorF32::mul)
+      .def("matmul", &underhfs::CudaTensorF32::matmul)
+      .def("sum", &underhfs::CudaTensorF32::sum);
 #endif
 }

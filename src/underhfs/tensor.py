@@ -342,7 +342,7 @@ class Tensor:
     def _try_native_binary(self, rhs: Tensor, op: str) -> Tensor | None:
         if op not in {"add", "mul"}:
             return None
-        if op == "add" and self.shape == rhs.shape and self._native_cuda_eligible() and rhs._native_cuda_eligible():
+        if self.shape == rhs.shape and self._native_cuda_eligible() and rhs._native_cuda_eligible():
             try:
                 if self._native_cuda is None:
                     self._attach_cuda_storage()
@@ -358,7 +358,10 @@ class Tensor:
                     _children=(self, rhs),
                     _op=op,
                 )
-                out._native_cuda = self._native_cuda.add(rhs._native_cuda)
+                if op == "add":
+                    out._native_cuda = self._native_cuda.add(rhs._native_cuda)
+                else:
+                    out._native_cuda = self._native_cuda.mul(rhs._native_cuda)
                 out.backend = "native_cuda"
                 out._sync_from_cuda()
                 return out
@@ -588,6 +591,24 @@ class Tensor:
 
     def sum(self) -> Tensor:
         out = None
+        if self._native_cuda_eligible():
+            try:
+                if self._native_cuda is None:
+                    self._attach_cuda_storage()
+                out = Tensor(
+                    0.0,
+                    requires_grad=self.requires_grad,
+                    dtype=self.dtype,
+                    device=self.device,
+                    layout=self.layout,
+                    _children=(self,),
+                    _op="sum",
+                )
+                out._native_cuda = self._native_cuda.sum()
+                out.backend = "native_cuda"
+                out._sync_from_cuda()
+            except Exception:
+                out = None
         if self._native_cpu_eligible():
             try:
                 out = Tensor._from_native_core(

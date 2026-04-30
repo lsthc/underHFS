@@ -16,6 +16,39 @@ extern "C" __global__ void underhfs_add_f32(
   }
 }
 
+extern "C" __global__ void underhfs_mul_f32(
+    const float* left, const float* right, float* out, int n) {
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < n) {
+    out[index] = left[index] * right[index];
+  }
+}
+
+extern "C" __global__ void underhfs_sum_blocks_f32(const float* values, float* partials, int n) {
+  extern __shared__ float scratch[];
+  int tid = threadIdx.x;
+  int index = blockIdx.x * blockDim.x * 2 + threadIdx.x;
+  float acc = 0.0f;
+  if (index < n) {
+    acc += values[index];
+  }
+  if (index + blockDim.x < n) {
+    acc += values[index + blockDim.x];
+  }
+  scratch[tid] = acc;
+  __syncthreads();
+
+  for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+    if (tid < stride) {
+      scratch[tid] += scratch[tid + stride];
+    }
+    __syncthreads();
+  }
+  if (tid == 0) {
+    partials[blockIdx.x] = scratch[0];
+  }
+}
+
 namespace underhfs {
 
 namespace {
@@ -139,6 +172,26 @@ CudaTensorF32 CudaTensorF32::add(const CudaTensorF32& other) const {
   return CudaTensorF32(out, shape_);
 }
 
+CudaTensorF32 CudaTensorF32::mul(const CudaTensorF32& other) const {
+  if (shape_ != other.shape_) {
+    throw std::invalid_argument("CudaTensorF32 mul requires identical shapes");
+  }
+  float* out = nullptr;
+  check_cuda(cudaMalloc(&out, numel_ * sizeof(float)), "CudaTensorF32 mul cudaMalloc");
+  const int n = static_cast<int>(numel_);
+  const int block = 256;
+  const int grid = (n + block - 1) / block;
+  underhfs_mul_f32<<<grid, block>>>(device_, other.device_, out, n);
+  try {
+    check_cuda(cudaGetLastError(), "CudaTensorF32 mul launch");
+    check_cuda(cudaDeviceSynchronize(), "CudaTensorF32 mul sync");
+  } catch (...) {
+    cudaFree(out);
+    throw;
+  }
+  return CudaTensorF32(out, shape_);
+}
+
 CudaTensorF32 CudaTensorF32::matmul(const CudaTensorF32& other) const {
   if (shape_.size() != 2 || other.shape_.size() != 2) {
     throw std::invalid_argument("CudaTensorF32 matmul currently requires 2D tensors");
@@ -167,6 +220,43 @@ CudaTensorF32 CudaTensorF32::matmul(const CudaTensorF32& other) const {
     throw;
   }
   return CudaTensorF32(out, out_shape);
+}
+
+CudaTensorF32 CudaTensorF32::sum() const {
+  if (numel_ == 0) {
+    throw std::invalid_argument("CudaTensorF32 sum requires at least one value");
+  }
+  const int block = 256;
+  const float* current = device_;
+  int current_n = static_cast<int>(numel_);
+  std::vector<float*> temporaries;
+  try {
+    while (current_n > 1) {
+      const int grid = (current_n + block * 2 - 1) / (block * 2);
+      float* partials = nullptr;
+      check_cuda(cudaMalloc(&partials, static_cast<std::size_t>(grid) * sizeof(float)),
+                 "CudaTensorF32 sum partial cudaMalloc");
+      temporaries.push_back(partials);
+      underhfs_sum_blocks_f32<<<grid, block, block * sizeof(float)>>>(current, partials, current_n);
+      check_cuda(cudaGetLastError(), "CudaTensorF32 sum launch");
+      current = partials;
+      current_n = grid;
+    }
+    float* out = nullptr;
+    check_cuda(cudaMalloc(&out, sizeof(float)), "CudaTensorF32 sum cudaMalloc");
+    check_cuda(cudaMemcpy(out, current, sizeof(float), cudaMemcpyDeviceToDevice),
+               "CudaTensorF32 sum device copy");
+    check_cuda(cudaDeviceSynchronize(), "CudaTensorF32 sum sync");
+    for (float* temporary : temporaries) {
+      cudaFree(temporary);
+    }
+    return CudaTensorF32(out, {});
+  } catch (...) {
+    for (float* temporary : temporaries) {
+      cudaFree(temporary);
+    }
+    throw;
+  }
 }
 
 std::vector<float> cuda_add_f32_host(const std::vector<float>& left,
