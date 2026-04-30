@@ -21,6 +21,38 @@ class DistributedPolicy:
     backend: str = "nccl"
 
 
+@dataclass(frozen=True)
+class NcclRuntimePlan:
+    world_size: int
+    backend: str
+    modes: tuple[ParallelMode, ...]
+    launch_command: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, int | str | list[str]]:
+        return {
+            "world_size": self.world_size,
+            "backend": self.backend,
+            "modes": [mode.value for mode in self.modes],
+            "launch_command": list(self.launch_command),
+        }
+
+
+def nccl_runtime_plan(policy: DistributedPolicy) -> NcclRuntimePlan:
+    if policy.backend != "nccl":
+        raise ValueError("NCCL runtime plan requires backend='nccl'")
+    if policy.world_size <= 1:
+        command = ("python", "-m", "underhfs.distributed.launch", "--standalone")
+    else:
+        command = (
+            "torchrun-compatible-launcher",
+            f"--nproc-per-node={policy.world_size}",
+            "python",
+            "-m",
+            "underhfs.distributed.launch",
+        )
+    return NcclRuntimePlan(policy.world_size, policy.backend, policy.modes, command)
+
+
 @dataclass
 class ProcessGroup:
     policy: DistributedPolicy

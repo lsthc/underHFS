@@ -14,6 +14,7 @@ from underhfs.native import status as native_status
 from underhfs.nn import TransformerLM
 from underhfs.optim import SGD
 from underhfs.serialization import (
+    export_onnx,
     export_manifest,
     load_binary_state_dict,
     load_checkpoint,
@@ -212,10 +213,16 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
 
 def _cmd_export(args: argparse.Namespace) -> int:
-    if args.format != "manifest":
-        print("underhfs export currently supports --format manifest; ONNX export is pending native IR")
-        return 2
     model = _tiny_lm_from_args(args)
+    if args.format == "onnx":
+        export_onnx(
+            args.path,
+            model_name="TransformerLM",
+            state=model.state_dict(),
+            inputs={"token_ids": {"shape": [args.seq_len], "dtype": "int64"}},
+        )
+        print(json.dumps({"exported": args.path, "format": "onnx-lite", "model": "TransformerLM"}, indent=2))
+        return 0
     export_manifest(
         args.path,
         model_name="TransformerLM",

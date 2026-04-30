@@ -1,7 +1,7 @@
 from underhfs import DType, tensor
-from underhfs.nn import Linear, Sequential, ReLU
+from underhfs.nn import Conv2d, Linear, Sequential, ReLU
 from underhfs.native import status
-from underhfs.optim import AdamW, FusedAdamW, SGD
+from underhfs.optim import AdamW, FusedAdamW, SGD, fused_adamw_kernel_status
 
 
 def test_module_optimizer_step_changes_parameter_version():
@@ -51,6 +51,16 @@ def test_fused_adamw_updates_parameters():
     loss.backward()
     opt.step()
     assert model.weight.tolist() != before
+    assert opt.last_kernel_status.available
+    assert fused_adamw_kernel_status(model.parameters()).backend == "python"
+
+
+def test_conv2d_backend_status_reports_cudnn_contract():
+    conv = Conv2d(1, 1, 1)
+    assert conv.backend_status().available
+    if status().cuda_enabled:
+        x = tensor([[[[1.0]]]]).cuda()
+        assert conv.backend_status(x).backend == "cudnn"
 
 
 def test_adamw_state_preserves_cuda_dtype_when_available():

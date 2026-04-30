@@ -19,6 +19,36 @@ class Optimizer:
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
+class OptimizerKernelStatus:
+    name: str
+    backend: str
+    available: bool
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, str | bool]:
+        return {
+            "name": self.name,
+            "backend": self.backend,
+            "available": self.available,
+            "reason": self.reason,
+        }
+
+
+def fused_adamw_kernel_status(params: Iterable[Tensor]) -> OptimizerKernelStatus:
+    parameters = list(params)
+    if not parameters:
+        return OptimizerKernelStatus("fused_adamw", "python", True, "no parameters")
+    if all(param.device.kind == "cuda" for param in parameters):
+        return OptimizerKernelStatus(
+            "fused_adamw",
+            "cuda-native",
+            False,
+            "native fused AdamW CUDA kernel is reserved; Python fused step preserves CUDA metadata",
+        )
+    return OptimizerKernelStatus("fused_adamw", "python", True, "CPU/Python fused update loop")
+
+
 class SGD(Optimizer):
     def __init__(self, params: Iterable[Tensor], lr: float = 1e-3) -> None:
         super().__init__(params)
@@ -123,6 +153,7 @@ class FusedAdamW(AdamW):
     """
 
     def step(self) -> None:
+        self.last_kernel_status = fused_adamw_kernel_status(self.params)
         self.step_count += 1
         beta1, beta2 = self.betas
         active = [

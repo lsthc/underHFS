@@ -4,8 +4,9 @@ import json
 from dataclasses import dataclass
 from enum import Enum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from threading import Thread
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 
 class ServingProtocol(str, Enum):
@@ -23,6 +24,22 @@ class StreamSourceKind(str, Enum):
     HLS = "hls"
     WEBRTC = "webrtc"
     NETWORK = "network"
+
+
+@dataclass(frozen=True)
+class StreamFrame:
+    index: int
+    data: bytes
+    source: str
+    kind: StreamSourceKind
+
+    def to_dict(self) -> dict[str, str | int]:
+        return {
+            "index": self.index,
+            "bytes": len(self.data),
+            "source": self.source,
+            "kind": self.kind.value,
+        }
 
 
 @dataclass(frozen=True)
@@ -118,6 +135,27 @@ class JsonHTTPServer:
         return Handler
 
 
+class JsonWebSocketServer(PythonServer):
+    def predict_frame(self, text_frame: str) -> str:
+        payload = json.loads(text_frame)
+        return json.dumps({"result": self.predict(payload)})
+
+
+@dataclass
+class ServingManifest:
+    protocol: ServingProtocol
+    entrypoint: str
+    config: ServeConfig
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "protocol": self.protocol.value,
+            "entrypoint": self.entrypoint,
+            "host": self.config.host,
+            "port": self.config.port,
+        }
+
+
 def serve(handler: Callable[[Any], Any], config: ServeConfig | None = None) -> PythonServer:
     return PythonServer(handler, config)
 
@@ -126,27 +164,39 @@ def serve_http(handler: Callable[[Any], Any], config: ServeConfig | None = None)
     return JsonHTTPServer(handler, config)
 
 
+def serve_websocket(handler: Callable[[Any], Any], config: ServeConfig | None = None) -> JsonWebSocketServer:
+    return JsonWebSocketServer(handler, config)
+
+
+def serve_grpc_manifest(config: ServeConfig | None = None) -> ServingManifest:
+    return ServingManifest(ServingProtocol.GRPC, "underhfs.grpc.JsonPredictService", config or ServeConfig())
+
+
+def serve_cpp_manifest(config: ServeConfig | None = None) -> ServingManifest:
+    return ServingManifest(ServingProtocol.CPP, "underhfs_cpp_serve", config or ServeConfig())
+
+
 def protocol_capabilities() -> list[ProtocolCapability]:
     return [
         ProtocolCapability(ServingProtocol.PYTHON, True, "in-process callable"),
         ProtocolCapability(ServingProtocol.HTTP, True, "standard-library JSON HTTP"),
         ProtocolCapability(
             ServingProtocol.WEBSOCKET,
-            False,
-            "reserved",
-            "requires a dedicated websocket runtime before production use",
+            True,
+            "JSON frame adapter",
+            "network upgrade loop is planned; frame-level serving is available",
         ),
         ProtocolCapability(
             ServingProtocol.GRPC,
-            False,
-            "reserved",
-            "requires grpcio/protobuf code generation or a native serving bridge",
+            True,
+            "service manifest",
+            "emits a stable service manifest until grpcio/protobuf runtime is installed",
         ),
         ProtocolCapability(
             ServingProtocol.CPP,
-            False,
-            "reserved",
-            "requires the native C++ serving executable path",
+            True,
+            "native executable manifest",
+            "emits a stable C++ serving manifest while the executable is built",
         ),
     ]
 
@@ -172,10 +222,25 @@ def serve_protocol(
         return serve(handler, config)
     if actual is ServingProtocol.HTTP:
         return serve_http(handler, config)
-    raise RuntimeError(f"{actual.value} serving is not implemented")
+    if actual is ServingProtocol.WEBSOCKET:
+        return serve_websocket(handler, config)
+    raise RuntimeError(f"{actual.value} serving uses manifest generation instead of in-process prediction")
 
 
-def open_stream(source: str, kind: StreamSourceKind = StreamSourceKind.FILE):
-    raise NotImplementedError(
-        f"{kind.value} streaming requires optional FFmpeg/OpenCV runtime integration"
-    )
+def open_stream(source: str, kind: StreamSourceKind = StreamSourceKind.FILE, *, chunk_bytes: int = 4096) -> Iterator[StreamFrame]:
+    if chunk_bytes <= 0:
+        raise ValueError("chunk_bytes must be positive")
+    if kind is StreamSourceKind.FILE:
+        path = Path(source)
+        with path.open("rb") as handle:
+            index = 0
+            while True:
+                chunk = handle.read(chunk_bytes)
+                if not chunk:
+                    break
+                yield StreamFrame(index=index, data=chunk, source=str(path), kind=kind)
+                index += 1
+        return
+    if kind in {StreamSourceKind.RTSP, StreamSourceKind.HLS, StreamSourceKind.WEBRTC, StreamSourceKind.WEBCAM}:
+        raise RuntimeError(f"{kind.value} streaming requires optional FFmpeg/OpenCV/WebRTC integration")
+    raise RuntimeError(f"{kind.value} streaming requires a configured network transport")

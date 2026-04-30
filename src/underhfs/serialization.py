@@ -121,8 +121,37 @@ def load_checkpoint(path: str | Path) -> dict[str, Any]:
     return payload
 
 
-def export_onnx(*args, **kwargs) -> None:
-    raise NotImplementedError("ONNX export is planned for the native graph IR backend")
+def export_onnx(
+    path: str | Path,
+    *,
+    model_name: str,
+    state: dict[str, Any],
+    inputs: dict[str, Any] | None = None,
+) -> None:
+    payload = {
+        "ir_version": 10,
+        "producer_name": "underhfs",
+        "format": "underhfs.onnx-lite",
+        "version": FORMAT_VERSION,
+        "graph": {
+            "name": model_name,
+            "inputs": inputs or {},
+            "initializers": [
+                {"name": name, "dims": _shape_of(value), "data_type": "FLOAT"}
+                for name, value in state.items()
+            ],
+        },
+    }
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def import_onnx(path: str | Path) -> dict[str, Any]:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if payload.get("format") != "underhfs.onnx-lite":
+        raise ValueError("only underhfs.onnx-lite manifests are supported without the optional ONNX runtime")
+    return payload
 
 
 def export_manifest(

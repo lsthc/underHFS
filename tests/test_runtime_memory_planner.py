@@ -1,6 +1,6 @@
 from underhfs import tensor
 from underhfs.cuda import MemoryPolicy, MemoryTier, _parse_nvidia_smi_devices
-from underhfs.runtime import MemoryPlanner, planner_from_system
+from underhfs.runtime import MemoryPlanner, OffloadExecutor, planner_from_system
 from underhfs.tensor import DType
 
 
@@ -44,3 +44,13 @@ def test_planner_from_system_returns_configured_tiers():
     assert set(snapshot).issubset({"vram", "ram"})
     assert "vram" in snapshot
     assert "ram" in snapshot
+
+
+def test_nvme_offload_executor_roundtrip(tmp_path=None):
+    root = ".underhfs-offload-test" if tmp_path is None else tmp_path
+    executor = OffloadExecutor(MemoryPolicy(scratch_path=str(root)))
+    handle = executor.offload_tensor(tensor([[1.0, 2.0]]), MemoryTier.NVME)
+    loaded = executor.load_tensor(handle)
+    assert handle.tier is MemoryTier.NVME
+    assert loaded.tolist() == [[1.0, 2.0]]
+    executor.release(handle)

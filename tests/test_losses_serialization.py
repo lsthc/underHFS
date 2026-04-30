@@ -7,6 +7,8 @@ from underhfs.functional import cross_entropy, mse_loss
 from underhfs.nn import Conv2d, Embedding, Linear, SelfAttention
 from underhfs.serialization import (
     BINARY_MAGIC,
+    export_onnx,
+    import_onnx,
     load_binary_state_dict,
     load_state_dict,
     save_binary_state_dict,
@@ -106,6 +108,17 @@ def test_binary_state_rejects_overlapping_tensor_spans(tmp_path=None):
     finally:
         if tmp_path is None:
             path.unlink()
+
+
+def test_onnx_lite_export_import_manifest(tmp_path=None):
+    path = Path("tmp_underhfs_model.onnx.json") if tmp_path is None else tmp_path / "model.onnx.json"
+    model = Linear(2, 1)
+    export_onnx(path, model_name="Linear", state=model.state_dict(), inputs={"x": {"shape": [1, 2]}})
+    payload = import_onnx(path)
+    assert payload["producer_name"] == "underhfs"
+    assert payload["graph"]["name"] == "Linear"
+    if tmp_path is None:
+        path.unlink()
 
 
 def _nested_close(left, right, tol=1e-6):

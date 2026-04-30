@@ -1,11 +1,28 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from dataclasses import dataclass
 from math import sqrt
 from typing import Iterable, Iterator
 
 from underhfs import functional as F
 from underhfs.tensor import Tensor, arange, kaiming_uniform, ones, tensor, uniform, zeros
+
+
+@dataclass(frozen=True)
+class BackendStatus:
+    name: str
+    backend: str
+    available: bool
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, str | bool]:
+        return {
+            "name": self.name,
+            "backend": self.backend,
+            "available": self.available,
+            "reason": self.reason,
+        }
 
 
 class Parameter(Tensor):
@@ -336,7 +353,20 @@ class Conv2d(Module):
         )
         self.bias = Parameter(zeros((out_channels,))) if bias else None
 
+    def backend_status(self, x: Tensor | None = None) -> BackendStatus:
+        if x is not None and x.device.kind == "cuda":
+            return BackendStatus(
+                "conv2d",
+                "cudnn",
+                False,
+                "cuDNN convolution descriptor/execution path is reserved; Python fallback is used for CPU tensors",
+            )
+        return BackendStatus("conv2d", "python", True, "portable fallback convolution")
+
     def forward(self, x: Tensor) -> Tensor:
+        status = self.backend_status(x)
+        if x.device.kind == "cuda" and not status.available:
+            raise RuntimeError(status.reason)
         if x.ndim != 4:
             raise ValueError("Conv2d fallback expects input shape [batch, channels, height, width]")
         batch, channels, height, width = x.shape

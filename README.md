@@ -92,9 +92,25 @@ external test and benchmark oracles.
 - Distributed execution has a deterministic world-size-1 process group with
   barrier, broadcast, all-reduce, DDP state/parameter passthrough, and `no_sync`
   semantics while multi-process NCCL remains reserved.
-- Serving exposes protocol capabilities and routes both `/predict` and
-  `/v1/predict` for JSON HTTP while reserved WebSocket/gRPC/C++ paths fail with
-  clear production-readiness errors.
+- Serving exposes protocol capabilities, routes both `/predict` and
+  `/v1/predict` for JSON HTTP, provides a JSON WebSocket frame adapter, and
+  emits gRPC/C++ serving manifests for native deployment paths.
+- Forward-mode `autograd.jvp` is available for core eager Tensor arithmetic,
+  matmul, reductions, and common elementwise ops.
+- Activation checkpointing now exposes an eager recompute contract that marks
+  checkpointed Tensor outputs while preserving backward behavior.
+- Compile reports lower GraphIR fusion candidates into an executable eager
+  fused plan, giving guard-specialized calls a concrete backend handoff object.
+- Conv2d, fused AdamW, attention fusion, cuDNN, and NCCL now expose explicit
+  backend status/launch-plan contracts so native runtime gaps are inspectable.
+- NVMe tensor offload can write, reload, and release Tensor payloads through an
+  `OffloadExecutor`; network offload remains a configured transport extension.
+- ONNX export/import has an `underhfs.onnx-lite` manifest path for graph/state
+  interchange while full ONNX protobuf execution remains optional-runtime work.
+- WebSocket serving has a JSON frame adapter, gRPC/C++ serving emit stable
+  manifests, and file streaming yields byte frames while FFmpeg/OpenCV/WebRTC
+  integrations remain optional transport backends.
+- Release planning now includes a wheel/CUDA matrix and API reference in docs.
 
 ## Product Surface
 

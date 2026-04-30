@@ -1,0 +1,44 @@
+# underHFS API Reference
+
+This reference is intentionally compact while the framework is still in its
+native runtime bring-up phase.
+
+## Tensor
+
+- `underhfs.tensor(data, **kwargs)` creates a Tensor.
+- `Tensor.to(device=None, dtype=None, layout=None)` casts metadata and moves to
+  CUDA when the native backend is available.
+- `Tensor.backward(grad=None)` runs eager reverse-mode autograd.
+- `Tensor.view`, `reshape`, `flatten`, slicing, `sum`, `mean`, `softmax`,
+  `relu`, `tanh`, `exp`, `log`, `matmul` are available in the fallback runtime.
+
+## Autograd
+
+- `underhfs.autograd.backward(tensor, grad=None)`
+- `underhfs.autograd.no_grad()`
+- `underhfs.autograd.jvp(function, primals, tangents)`
+- `underhfs.autograd.checkpoint(function, *args, **kwargs)`
+
+## Runtime
+
+- `underhfs.cuda.capability_matrix()`
+- `underhfs.cuda.require_kernel(op, device="cpu", dtype="fp32")`
+- `underhfs.runtime.MemoryPlanner`
+- `underhfs.runtime.OffloadExecutor`
+
+## Compile
+
+- `underhfs.compile.compile(function=None, policy=None)`
+- `underhfs.compile.explain(function, *args, policy=None, **kwargs)`
+- `CompileReport.to_dict()` includes graph, guards, fusion groups, cache stats,
+  and an eager fused execution plan.
+
+## Serving
+
+- `underhfs.serve.serve(handler)`
+- `underhfs.serve.serve_http(handler, config=None)`
+- `underhfs.serve.serve_websocket(handler, config=None)`
+- `underhfs.serve.serve_grpc_manifest(config=None)`
+- `underhfs.serve.serve_cpp_manifest(config=None)`
+- `underhfs.serve.open_stream(source, kind=StreamSourceKind.FILE)`
+

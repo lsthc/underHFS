@@ -91,6 +91,38 @@ class FusionGroup:
 
 
 @dataclass(frozen=True)
+class CompiledKernel:
+    name: str
+    kind: FusionKind
+    nodes: tuple[str, ...]
+    backend: str
+    executable: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "kind": self.kind.value,
+            "nodes": list(self.nodes),
+            "backend": self.backend,
+            "executable": self.executable,
+        }
+
+
+@dataclass(frozen=True)
+class ExecutablePlan:
+    graph: GraphIR
+    kernels: tuple[CompiledKernel, ...]
+    fallback_backend: str = "eager-python"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "graph": self.graph.to_dict(),
+            "kernels": [kernel.to_dict() for kernel in self.kernels],
+            "fallback_backend": self.fallback_backend,
+        }
+
+
+@dataclass(frozen=True)
 class CompileCacheInfo:
     hits: int = 0
     misses: int = 0
@@ -116,6 +148,7 @@ class CompileReport:
     specialization_key: GuardSignature = ()
     cache_hit: bool = False
     cache_info: CompileCacheInfo = field(default_factory=CompileCacheInfo)
+    plan: ExecutablePlan | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -140,6 +173,7 @@ class CompileReport:
             ],
             "cache_hit": self.cache_hit,
             "cache_info": self.cache_info.to_dict(),
+            "plan": None if self.plan is None else self.plan.to_dict(),
         }
 
 
@@ -241,18 +275,34 @@ def analyze_execution(
 
     guards = _guards(args, kwargs or {})
     fusion_groups = _fusion_groups(graph, active_policy)
+    plan = lower_to_plan(graph, fusion_groups)
     return CompileReport(
         active_policy,
         graph,
         guards,
         fusion_groups,
         specialization_key=_guards_to_signature(guards),
+        plan=plan,
     )
 
 
 def explain(fn: Callable[..., Any], *args: Any, policy: CompilePolicy | None = None, **kwargs: Any) -> CompileReport:
     result = fn(*args, **kwargs)
     return analyze_execution(result, args=args, kwargs=kwargs, policy=policy)
+
+
+def lower_to_plan(graph: GraphIR, fusion_groups: tuple[FusionGroup, ...]) -> ExecutablePlan:
+    kernels = tuple(
+        CompiledKernel(
+            name=f"kernel_{index}_{group.kind.value}",
+            kind=group.kind,
+            nodes=group.nodes,
+            backend="eager-fused-plan",
+            executable=True,
+        )
+        for index, group in enumerate(fusion_groups)
+    )
+    return ExecutablePlan(graph=graph, kernels=kernels)
 
 
 def _looks_like_tensor(value: Any) -> bool:

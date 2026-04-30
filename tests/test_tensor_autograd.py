@@ -1,4 +1,5 @@
 from underhfs import tensor, zeros
+from underhfs.autograd import checkpoint, jvp
 
 
 def test_shape_stride_and_inplace_version():
@@ -63,3 +64,22 @@ def test_non_contiguous_view_requires_reshape_copy():
         raise AssertionError("expected non-contiguous view to fail")
     reshaped = y.reshape(4)
     assert reshaped.tolist() == [1.0, 3.0, 4.0, 6.0]
+
+
+def test_forward_mode_jvp_for_elementwise_and_matmul():
+    x = tensor([[1.0, 2.0]])
+    w = tensor([[3.0], [4.0]])
+    dx = tensor([[1.0, 1.0]])
+    dw = tensor([[0.5], [0.5]])
+    primal, tangent = jvp(lambda a, b: (a @ b).sum(), (x, w), (dx, dw))
+    assert primal.item() == 11.0
+    assert tangent.item() == 8.5
+
+
+def test_checkpoint_marks_training_value_and_keeps_backward():
+    x = tensor(3.0, requires_grad=True)
+    y = checkpoint(lambda value: value * value, x)
+    assert y._underhfs_checkpoint["mode"] == "eager-recompute-contract"
+    y.backward()
+    assert x.grad is not None
+    assert x.grad.item() == 6.0
