@@ -5,7 +5,7 @@ from math import sqrt
 from typing import Iterable, Iterator
 
 from underhfs import functional as F
-from underhfs.tensor import Tensor, kaiming_uniform, ones, tensor, uniform, zeros
+from underhfs.tensor import Tensor, arange, kaiming_uniform, ones, tensor, uniform, zeros
 
 
 class Parameter(Tensor):
@@ -89,6 +89,11 @@ class Linear(Module):
 class ReLU(Module):
     def forward(self, x: Tensor) -> Tensor:
         return x.relu()
+
+
+class GELU(Module):
+    def forward(self, x: Tensor) -> Tensor:
+        return F.gelu(x)
 
 
 class Sequential(Module):
@@ -197,7 +202,7 @@ class Embedding(Module):
 class MLP(Module):
     def __init__(self, in_features: int, hidden_features: int, out_features: int) -> None:
         super().__init__()
-        self.net = Sequential(Linear(in_features, hidden_features), ReLU(), Linear(hidden_features, out_features))
+        self.net = Sequential(Linear(in_features, hidden_features), GELU(), Linear(hidden_features, out_features))
 
     def forward(self, x: Tensor) -> Tensor:
         return self.net(x)
@@ -223,17 +228,86 @@ class SelfAttention(Module):
         return self.out_proj(weights @ v)
 
 
+class CausalSelfAttention(SelfAttention):
+    def forward(self, x: Tensor) -> Tensor:
+        if x.ndim != 2:
+            raise ValueError("CausalSelfAttention fallback expects [tokens, features]")
+        tokens = x.shape[0]
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+        scores = (q @ k.T) / sqrt(self.features)
+        mask_values = [
+            0.0 if col <= row else -1.0e9
+            for row in range(tokens)
+            for col in range(tokens)
+        ]
+        scores = scores + tensor(mask_values, shape=(tokens, tokens))
+        weights = scores.softmax()
+        return self.out_proj(weights @ v)
+
+
 class TransformerBlock(Module):
-    def __init__(self, features: int, hidden_features: int) -> None:
+    def __init__(self, features: int, hidden_features: int, *, causal: bool = False) -> None:
         super().__init__()
         self.attn_norm = RMSNorm(features)
-        self.attn = SelfAttention(features)
+        self.attn = CausalSelfAttention(features) if causal else SelfAttention(features)
         self.mlp_norm = RMSNorm(features)
         self.mlp = MLP(features, hidden_features, features)
 
     def forward(self, x: Tensor) -> Tensor:
         x = x + self.attn(self.attn_norm(x))
         return x + self.mlp(self.mlp_norm(x))
+
+
+class TransformerLM(Module):
+    def __init__(
+        self,
+        vocab_size: int,
+        max_seq_len: int,
+        features: int,
+        hidden_features: int,
+        layers: int,
+    ) -> None:
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.max_seq_len = max_seq_len
+        self.token_embedding = Embedding(vocab_size, features)
+        self.position_embedding = Embedding(max_seq_len, features)
+        self.blocks = ModuleList(
+            TransformerBlock(features, hidden_features, causal=True) for _ in range(layers)
+        )
+        self.norm = RMSNorm(features)
+        self.head = Linear(features, vocab_size, bias=False)
+
+    def forward(self, token_ids: Tensor) -> Tensor:
+        if token_ids.ndim != 1:
+            raise ValueError("TransformerLM fallback expects 1D token ids")
+        seq_len = token_ids.shape[0]
+        if seq_len > self.max_seq_len:
+            raise ValueError(f"sequence length {seq_len} exceeds max_seq_len {self.max_seq_len}")
+        x = self.token_embedding(token_ids) + self.position_embedding(arange(seq_len))
+        for block in self.blocks:
+            x = block(x)
+        return self.head(self.norm(x))
+
+    def generate(self, token_ids: Tensor, max_new_tokens: int) -> Tensor:
+        if token_ids.ndim != 1:
+            raise ValueError("TransformerLM.generate fallback expects 1D token ids")
+        generated = [int(value) for value in token_ids._storage]
+        for _ in range(max_new_tokens):
+            if len(generated) >= self.max_seq_len:
+                context = generated[-self.max_seq_len :]
+            else:
+                context = generated
+            logits = self(tensor(context))
+            last_row = [
+                logits._value_at((logits.shape[0] - 1, col))
+                for col in range(logits.shape[1])
+            ]
+            next_token = tensor(last_row).argmax()
+            generated.append(next_token)
+        return tensor(generated)
 
 
 class Conv2d(Module):

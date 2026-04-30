@@ -20,12 +20,20 @@ class TensorCore {
 
   const std::vector<double>& storage() const;
   const std::vector<std::size_t>& shape() const;
+  std::vector<std::size_t> strides() const;
   std::size_t numel() const;
+  TensorCore add(const TensorCore& other) const;
+  TensorCore mul(const TensorCore& other) const;
+  TensorCore matmul(const TensorCore& other) const;
+  TensorCore sum() const;
   std::string repr() const;
 
  private:
   std::vector<double> storage_;
   std::vector<std::size_t> shape_;
 };
+
+std::vector<std::size_t> contiguous_strides(const std::vector<std::size_t>& shape);
+std::size_t shape_numel(const std::vector<std::size_t>& shape);
 
 }  // namespace underhfs

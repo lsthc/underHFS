@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from math import exp, log, sqrt
+from math import exp, log, sqrt, tanh
 from typing import Any, Callable, Iterable, Iterator, Sequence
 
 
@@ -164,6 +164,7 @@ class Tensor:
         self.device = Device.parse(device)
         self.layout = Layout(layout)
         self._prev = set(_children)
+        self._saved_versions = {child: child.version for child in self._prev}
         self._op = _op
         self._backward: Callable[[], None] = lambda: None
         self._version = 0
@@ -218,6 +219,11 @@ class Tensor:
                     "cannot move tensor to CUDA because the native core is unavailable: "
                     f"{native.reason}"
                 )
+            if not native.cuda_enabled:
+                raise RuntimeError(
+                    "cannot move tensor to CUDA because underHFS was built without CUDA support. "
+                    "Rebuild with UNDERHFS_WITH_CUDA=ON after installing CUDA Toolkit."
+                )
         return Tensor(
             list(self._storage),
             shape=self.shape,
@@ -252,6 +258,17 @@ class Tensor:
             raise ValueError("item() is only valid for single-value tensors")
         return self._storage[0]
 
+    def argmax(self) -> int:
+        if self.numel() == 0:
+            raise ValueError("argmax() is not valid for empty tensors")
+        best_index = 0
+        best_value = self._storage[0]
+        for index, value in enumerate(self._storage[1:], start=1):
+            if value > best_value:
+                best_index = index
+                best_value = value
+        return best_index
+
     def _offset(self, index: tuple[int, ...]) -> int:
         if len(index) != len(self.shape):
             raise IndexError(f"expected {len(self.shape)} indices, got {len(index)}")
@@ -269,6 +286,33 @@ class Tensor:
     def _ensure_tensor(self, other: Any) -> Tensor:
         return other if isinstance(other, Tensor) else tensor(other)
 
+    def _check_compatible(self, other: Tensor, op: str) -> None:
+        if self.device != other.device:
+            raise RuntimeError(
+                f"{op} received tensors on different devices: {self.device} and {other.device}. "
+                "Move tensors explicitly with .to(...), .cpu(), or .cuda()."
+            )
+        if self.layout != other.layout:
+            raise RuntimeError(
+                f"{op} received tensors with different layouts: {self.layout.value} and "
+                f"{other.layout.value}. Convert layout explicitly before the operation."
+            )
+        if self.dtype != other.dtype and self.shape != () and other.shape != ():
+            raise RuntimeError(
+                f"{op} received tensors with different dtypes: {self.dtype.value} and "
+                f"{other.dtype.value}. Cast explicitly with .to(dtype=...)."
+            )
+
+    def _check_saved_versions(self) -> None:
+        for child, expected in self._saved_versions.items():
+            if child.version != expected:
+                raise RuntimeError(
+                    "autograd detected an in-place mutation before backward: "
+                    f"op={self._op or 'leaf'} expected input version {expected}, "
+                    f"but found {child.version}. Use out-of-place ops, clone(), or detach() "
+                    "before mutating tensors needed for gradients."
+                )
+
     def _accumulate_grad(self, grad: Tensor) -> None:
         if self.grad is None:
             self.grad = grad.detach()
@@ -277,6 +321,7 @@ class Tensor:
 
     def _binary(self, other: Any, op: str, fn: Callable[[float, float], float]) -> Tensor:
         rhs = self._ensure_tensor(other)
+        self._check_compatible(rhs, op)
         shape = _broadcast_shape(self.shape, rhs.shape)
         values = [
             fn(self._value_at(_broadcast_index(idx, self.shape)), rhs._value_at(_broadcast_index(idx, rhs.shape)))
@@ -349,6 +394,7 @@ class Tensor:
 
     def __matmul__(self, other: Any) -> Tensor:
         rhs = self._ensure_tensor(other)
+        self._check_compatible(rhs, "matmul")
         if self.ndim != 2 or rhs.ndim != 2:
             raise ValueError("matmul fallback currently supports 2D tensors")
         m, k = self.shape
@@ -401,6 +447,18 @@ class Tensor:
             if self.requires_grad and out.grad is not None:
                 mask = Tensor([1.0 if value > 0 else 0.0 for value in self._storage], shape=self.shape)
                 self._accumulate_grad(out.grad * mask)
+
+        out._backward = backward
+        return out
+
+    def tanh(self) -> Tensor:
+        values = [tanh(value) for value in self._storage]
+        out = Tensor(values, shape=self.shape, requires_grad=self.requires_grad, _children=(self,), _op="tanh")
+
+        def backward() -> None:
+            if self.requires_grad and out.grad is not None:
+                grad = Tensor([1.0 - value * value for value in out._storage], shape=out.shape)
+                self._accumulate_grad(out.grad * grad)
 
         out._backward = backward
         return out
@@ -537,6 +595,7 @@ class Tensor:
 
         build(self)
         for node in reversed(topo):
+            node._check_saved_versions()
             node._backward()
 
     def __repr__(self) -> str:

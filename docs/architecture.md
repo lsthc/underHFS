@@ -13,3 +13,22 @@ underHFS is split into four layers:
 
 The current Python fallback is intentionally small but executable. It anchors
 the public semantics while the C++/CUDA backend comes online.
+
+## Native core contract
+
+The native `_core` extension exposes `TensorCore` as the first C++ execution
+object. Its initial contract mirrors the Python fallback for contiguous dense
+CPU tensors:
+
+- storage and shape validation
+- contiguous stride derivation
+- `add`, `mul`, `matmul`, and `sum`
+- deterministic exceptions for unsupported shapes
+
+`underhfs.native.probe()` exercises this contract when the extension is built.
+`underhfs doctor` includes the probe output once `_core` is importable.
+
+Native CPU availability is intentionally separate from CUDA availability.
+The `_core.cuda_enabled` flag is false unless the extension was built with
+`UNDERHFS_WITH_CUDA=ON`; `.cuda()` must fail clearly when only CPU native code is
+present.

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from math import exp, log
+from math import exp, log, sqrt
 
 from underhfs.tensor import Tensor, tensor, zeros
 
@@ -78,6 +78,11 @@ def cross_entropy(logits: Tensor, target: Tensor, reduction: str = "mean") -> Te
 
 def relu(input: Tensor) -> Tensor:
     return input.relu()
+
+
+def gelu(input: Tensor) -> Tensor:
+    coeff = sqrt(2.0 / 3.141592653589793)
+    return 0.5 * input * (1.0 + (coeff * (input + 0.044715 * (input**3))).tanh())
 
 
 def softmax(input: Tensor) -> Tensor:

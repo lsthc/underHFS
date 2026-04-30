@@ -37,14 +37,20 @@ external test and benchmark oracles.
   version counters.
 - Reverse-mode autograd for scalar losses, elementwise ops, matmul, softmax,
   embedding, and conv2d fallback paths.
-- `nn.Module`, `Parameter`, `Linear`, `Embedding`, `Conv2d`, `RMSNorm`,
-  `SelfAttention`, `TransformerBlock`, `MSELoss`, and `CrossEntropyLoss`.
+- `nn.Module`, `Parameter`, `Linear`, `Embedding`, `Conv2d`, `RMSNorm`, `GELU`,
+  `SelfAttention`, `CausalSelfAttention`, `TransformerBlock`, `TransformerLM`,
+  `MSELoss`, and `CrossEntropyLoss`.
 - `SGD`, `AdamW`, fused/ZeRO-aware optimizer API surfaces.
 - DataLoader, runtime policies, compile policies, distributed wrappers,
   checkpoint serialization, serving facade, native-core detection, and CLI smoke
-  commands.
+  commands including a tiny TransformerLM training path.
+- Byte-level tokenizer and greedy TransformerLM generation for bootstrap text
+  generation smoke tests.
+- Hierarchical memory planner for VRAM/RAM/NVMe placement policy simulation.
 - CMake + pybind11 native extension scaffold and CUDA kernel scaffold gated
   behind `UNDERHFS_WITH_CUDA`.
+- Native C++ `TensorCore` contract for shape validation, strides, add, mul,
+  matmul, and sum once `_core` is built.
 
 ## Product Surface
 
@@ -57,8 +63,10 @@ underHFS is organized around the same surfaces a full-stack AI platform needs:
 - `underhfs.data`. Dataset/DataLoader primitives.
 - `underhfs.compile`. graph IR, compile policy, fusion policy surface.
 - `underhfs.cuda`. runtime, precision, memory-tier, and CUDA availability policy.
+- `underhfs.runtime`. hierarchical memory planner and placement decisions.
 - `underhfs.distributed`. data/tensor/pipeline/ZeRO policy surface.
 - `underhfs.serve`. Python serving facade and streaming protocol definitions.
+- `underhfs.text`. bootstrap byte tokenizer for tiny text-generation loops.
 
 ## Quick Start
 
@@ -67,7 +75,12 @@ Use the source tree directly while the native backend is still being brought up:
 ```powershell
 $env:PYTHONPATH = "src"
 python -m underhfs.cli test
+python -m underhfs.cli doctor
 python -m underhfs.cli bench
+python -m underhfs.cli train --smoke
+python -m underhfs.cli checkpoint save-smoke tiny.uhfs.json
+python -m underhfs.cli serve --smoke --prompt "hi"
+python -m underhfs.cli export tiny.export.json
 ```
 
 Editable install:
@@ -75,7 +88,12 @@ Editable install:
 ```powershell
 python -m pip install -e . --no-build-isolation
 underhfs test
+underhfs doctor
 underhfs bench
+underhfs train --smoke
+underhfs checkpoint save-smoke tiny.uhfs.json
+underhfs serve --smoke --prompt "hi"
+underhfs export tiny.export.json
 ```
 
 The built-in `underhfs test` command exists so local verification works even
@@ -94,9 +112,11 @@ Required tools:
 - Ninja
 - CUDA Toolkit 13.x
 
-On this machine, Python 3.13.12, Git, and CMake are present. CUDA Toolkit
-`nvcc` and Ninja still need to be installed or added to `PATH` before native
-CUDA builds can run. See `docs/build.md`.
+On this machine, Python 3.13.12, Git, CMake, Visual Studio Build Tools,
+pybind11, and scikit-build-core are present. The native CPU `_core` extension
+builds and probes successfully. CUDA Toolkit `nvcc` and Ninja still need to be
+installed or added to `PATH` before native CUDA builds can run. See
+`docs/build.md`.
 
 ## Design Promise
 
@@ -104,6 +124,10 @@ underHFS aims for PyTorch-like ergonomics without becoming PyTorch-dependent.
 Unsupported hardware, missing native kernels, or unavailable memory policies
 should fail loudly with clear guidance instead of silently falling back into
 unknown performance or accuracy behavior.
+
+Early guardrails are documented in `docs/pytorch-pain-points.md`: in-place
+autograd mutation checks, explicit dtype/device/layout mismatch failures,
+environment diagnostics, and memory-tier planning.
 
 The long-term benchmark target is simple and brutal: match or beat PyTorch on
 the same hardware for both throughput and model quality, while exposing memory

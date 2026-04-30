@@ -6,7 +6,16 @@ from pathlib import Path
 
 from underhfs import __version__
 from underhfs.cuda import device_count, is_available
+from underhfs.datasets import inspect_text_dataset, write_sample_text_dataset
+from underhfs.diagnostics import doctor
+from underhfs.functional import cross_entropy
 from underhfs.native import status as native_status
+from underhfs.nn import TransformerLM
+from underhfs.optim import SGD
+from underhfs.serialization import export_manifest, load_checkpoint, save_checkpoint
+from underhfs.serve import serve
+from underhfs.tensor import tensor
+from underhfs.text import ByteTokenizer
 from underhfs.testing import run_test_functions
 
 
@@ -32,17 +41,140 @@ def _cmd_bench(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_doctor(_: argparse.Namespace) -> int:
+    print(json.dumps(doctor().to_dict(), indent=2))
+    return 0
+
+
 def _cmd_test(_: argparse.Namespace) -> int:
     modules = [
         "tests.test_tensor_autograd",
         "tests.test_nn_optim",
         "tests.test_runtime_surface",
         "tests.test_losses_serialization",
+        "tests.test_transformer_lm",
+        "tests.test_cli_train",
+        "tests.test_text_generation",
+        "tests.test_cli_fullstack",
+        "tests.test_runtime_memory_planner",
+        "tests.test_guardrails",
+        "tests.test_native_contract",
     ]
     passed = run_test_functions(modules)
     for name in passed:
         print(f"{name} OK")
     print(f"{len(passed)} tests passed")
+    return 0
+
+
+def _cmd_train(args: argparse.Namespace) -> int:
+    if not args.smoke:
+        print("underhfs train currently supports --smoke for the built-in tiny LM training path")
+        return 2
+
+    model = TransformerLM(
+        vocab_size=args.vocab_size,
+        max_seq_len=args.seq_len,
+        features=args.features,
+        hidden_features=args.hidden_features,
+        layers=args.layers,
+    )
+    opt = SGD(model.parameters(), lr=args.lr)
+    tokens = tensor([i % args.vocab_size for i in range(args.seq_len)])
+    targets = tensor([(i + 1) % args.vocab_size for i in range(args.seq_len)])
+    losses: list[float] = []
+
+    for _ in range(args.steps):
+        opt.zero_grad()
+        logits = model(tokens)
+        loss = cross_entropy(logits, targets)
+        losses.append(loss.item())
+        loss.backward()
+        opt.step()
+
+    print(
+        json.dumps(
+            {
+                "mode": "smoke",
+                "steps": args.steps,
+                "initial_loss": losses[0] if losses else None,
+                "final_loss": losses[-1] if losses else None,
+                "losses": losses,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def _tiny_lm_from_args(args: argparse.Namespace) -> TransformerLM:
+    return TransformerLM(
+        vocab_size=args.vocab_size,
+        max_seq_len=args.seq_len,
+        features=args.features,
+        hidden_features=args.hidden_features,
+        layers=args.layers,
+    )
+
+
+def _cmd_checkpoint(args: argparse.Namespace) -> int:
+    path = Path(args.path)
+    if args.action == "save-smoke":
+        model = _tiny_lm_from_args(args)
+        save_checkpoint(
+            path,
+            state=model.state_dict(),
+            metadata={
+                "model": "TransformerLM",
+                "vocab_size": args.vocab_size,
+                "seq_len": args.seq_len,
+                "features": args.features,
+                "hidden_features": args.hidden_features,
+                "layers": args.layers,
+            },
+        )
+        print(json.dumps({"saved": str(path), "parameters": len(model.state_dict())}, indent=2))
+        return 0
+    if args.action == "inspect":
+        payload = load_checkpoint(path)
+        print(json.dumps({"path": str(path), "metadata": payload["metadata"], "tensors": len(payload["state"])}, indent=2))
+        return 0
+    print(f"unsupported checkpoint action: {args.action}")
+    return 2
+
+
+def _cmd_dataset(args: argparse.Namespace) -> int:
+    if args.sample:
+        report = write_sample_text_dataset(args.path)
+    else:
+        report = inspect_text_dataset(args.path)
+    print(json.dumps(report.to_dict(), indent=2))
+    return 0
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    if not args.smoke:
+        print("underhfs serve currently supports --smoke for local PythonServer verification")
+        return 2
+    tokenizer = ByteTokenizer()
+    model = TransformerLM(vocab_size=256, max_seq_len=8, features=4, hidden_features=8, layers=1)
+    server = serve(lambda payload: tokenizer.decode(model.generate(tokenizer.encode(payload["prompt"]), args.max_new_tokens)))
+    print(json.dumps({"prompt": args.prompt, "response": server.predict({"prompt": args.prompt})}, indent=2))
+    return 0
+
+
+def _cmd_export(args: argparse.Namespace) -> int:
+    if args.format != "manifest":
+        print("underhfs export currently supports --format manifest; ONNX export is pending native IR")
+        return 2
+    model = _tiny_lm_from_args(args)
+    export_manifest(
+        args.path,
+        model_name="TransformerLM",
+        state=model.state_dict(),
+        inputs={"token_ids": {"shape": [args.seq_len], "dtype": "int64"}},
+    )
+    print(json.dumps({"exported": args.path, "format": "manifest", "model": "TransformerLM"}, indent=2))
     return 0
 
 
@@ -66,12 +198,53 @@ def main(argv: list[str] | None = None) -> int:
     bench = sub.add_parser("bench")
     bench.set_defaults(func=_cmd_bench)
 
+    doctor_cmd = sub.add_parser("doctor")
+    doctor_cmd.set_defaults(func=_cmd_doctor)
+
     test = sub.add_parser("test")
     test.set_defaults(func=_cmd_test)
 
-    for name in ("train", "serve", "dataset", "checkpoint", "export"):
-        command = sub.add_parser(name)
-        command.set_defaults(func=_not_implemented(name))
+    train = sub.add_parser("train")
+    train.add_argument("--smoke", action="store_true")
+    train.add_argument("--steps", type=int, default=3)
+    train.add_argument("--seq-len", type=int, default=4)
+    train.add_argument("--vocab-size", type=int, default=8)
+    train.add_argument("--features", type=int, default=4)
+    train.add_argument("--hidden-features", type=int, default=8)
+    train.add_argument("--layers", type=int, default=1)
+    train.add_argument("--lr", type=float, default=1e-3)
+    train.set_defaults(func=_cmd_train)
+
+    checkpoint = sub.add_parser("checkpoint")
+    checkpoint.add_argument("action", choices=("save-smoke", "inspect"))
+    checkpoint.add_argument("path")
+    checkpoint.add_argument("--seq-len", type=int, default=4)
+    checkpoint.add_argument("--vocab-size", type=int, default=8)
+    checkpoint.add_argument("--features", type=int, default=4)
+    checkpoint.add_argument("--hidden-features", type=int, default=8)
+    checkpoint.add_argument("--layers", type=int, default=1)
+    checkpoint.set_defaults(func=_cmd_checkpoint)
+
+    dataset = sub.add_parser("dataset")
+    dataset.add_argument("path")
+    dataset.add_argument("--sample", action="store_true")
+    dataset.set_defaults(func=_cmd_dataset)
+
+    serve_cmd = sub.add_parser("serve")
+    serve_cmd.add_argument("--smoke", action="store_true")
+    serve_cmd.add_argument("--prompt", default="hi")
+    serve_cmd.add_argument("--max-new-tokens", type=int, default=2)
+    serve_cmd.set_defaults(func=_cmd_serve)
+
+    export = sub.add_parser("export")
+    export.add_argument("path")
+    export.add_argument("--format", choices=("manifest", "onnx"), default="manifest")
+    export.add_argument("--seq-len", type=int, default=4)
+    export.add_argument("--vocab-size", type=int, default=8)
+    export.add_argument("--features", type=int, default=4)
+    export.add_argument("--hidden-features", type=int, default=8)
+    export.add_argument("--layers", type=int, default=1)
+    export.set_defaults(func=_cmd_export)
 
     args = parser.parse_args(argv)
     return args.func(args)

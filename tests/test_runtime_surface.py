@@ -37,6 +37,6 @@ def test_tensor_to_cpu_dtype_and_cuda_error():
     try:
         x.cuda()
     except RuntimeError as exc:
-        assert "native core is unavailable" in str(exc)
+        assert "native core is unavailable" in str(exc) or "built without CUDA support" in str(exc)
     else:
-        raise AssertionError("cuda() should fail while native core is unavailable")
+        raise AssertionError("cuda() should fail while CUDA backend is unavailable")
