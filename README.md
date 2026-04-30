@@ -96,17 +96,19 @@ external test and benchmark oracles.
   `/v1/predict` for JSON HTTP, provides a JSON WebSocket frame adapter, and
   emits gRPC/C++ serving manifests for native deployment paths.
 - Forward-mode `autograd.jvp` is available for core eager Tensor arithmetic,
-  matmul, reductions, and common elementwise ops.
-- Activation checkpointing now exposes an eager recompute contract that marks
-  checkpointed Tensor outputs while preserving backward behavior.
+  matmul, reductions, view/reshape/slice, softmax, and common elementwise ops.
+- Activation checkpointing now exposes an eager recompute contract plus
+  `checkpoint_sequential` for chunked training graphs while preserving backward
+  behavior.
 - Compile reports lower GraphIR fusion candidates into an executable eager
   fused plan, giving guard-specialized calls a concrete backend handoff object.
 - Conv2d, fused AdamW, attention fusion, cuDNN, and NCCL now expose explicit
   backend status/launch-plan contracts so native runtime gaps are inspectable.
 - NVMe tensor offload can write, reload, and release Tensor payloads through an
   `OffloadExecutor`; network offload remains a configured transport extension.
-- ONNX export/import has an `underhfs.onnx-lite` manifest path for graph/state
-  interchange while full ONNX protobuf execution remains optional-runtime work.
+- ONNX export/import has an `underhfs.onnx-lite` path with embedded state,
+  checksum validation, and state_dict reload while full ONNX protobuf execution
+  remains optional-runtime work.
 - WebSocket serving has a JSON frame adapter, gRPC/C++ serving emit stable
   manifests, and file streaming yields byte frames while FFmpeg/OpenCV/WebRTC
   integrations remain optional transport backends.

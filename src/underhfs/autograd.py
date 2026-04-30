@@ -39,6 +39,31 @@ def checkpoint(function: Callable[..., Any], *args: Any, preserve_rng_state: boo
     return result
 
 
+def checkpoint_sequential(
+    functions: tuple[Callable[[Any], Any], ...] | list[Callable[[Any], Any]],
+    segments: int,
+    input: Any,
+    *,
+    preserve_rng_state: bool = True,
+) -> Any:
+    if segments <= 0:
+        raise ValueError("segments must be positive")
+    if not functions:
+        return input
+    chunk_size = max(1, (len(functions) + segments - 1) // segments)
+    value = input
+    for start in range(0, len(functions), chunk_size):
+        chunk = functions[start : start + chunk_size]
+
+        def run_chunk(current: Any, chunk=chunk):
+            for function in chunk:
+                current = function(current)
+            return current
+
+        value = checkpoint(run_chunk, value, preserve_rng_state=preserve_rng_state)
+    return value
+
+
 def _mark_checkpointed(value: Any, *, function: str, preserve_rng_state: bool) -> None:
     if isinstance(value, Tensor):
         setattr(
@@ -145,6 +170,18 @@ class _DualTensor:
     def mean(self) -> "_DualTensor":
         return _DualTensor(self.primal.mean(), self.tangent.mean())
 
+    def view(self, *shape: int) -> "_DualTensor":
+        return _DualTensor(self.primal.view(*shape), self.tangent.view(*shape))
+
+    def reshape(self, *shape: int) -> "_DualTensor":
+        return _DualTensor(self.primal.reshape(*shape), self.tangent.reshape(*shape))
+
+    def flatten(self) -> "_DualTensor":
+        return _DualTensor(self.primal.flatten(), self.tangent.flatten())
+
+    def __getitem__(self, key: Any) -> "_DualTensor":
+        return _DualTensor(self.primal[key], self.tangent[key])
+
     def relu(self) -> "_DualTensor":
         mask = tensor(
             [1.0 if value > 0 else 0.0 for value in self.primal._flat_values()],
@@ -165,6 +202,52 @@ class _DualTensor:
 
     def log(self) -> "_DualTensor":
         return _DualTensor(self.primal.log(), self.tangent / self.primal)
+
+    def sqrt(self) -> "_DualTensor":
+        primal = self.primal.sqrt()
+        return _DualTensor(primal, self.tangent / (2.0 * primal))
+
+    def softmax(self) -> "_DualTensor":
+        primal = self.primal.softmax()
+        if self.primal.ndim == 1:
+            dot = sum(
+                primal._value_at((index,)) * self.tangent._value_at((index,))
+                for index in range(self.primal.shape[0])
+            )
+            tangent = tensor(
+                [
+                    primal._value_at((index,)) * (self.tangent._value_at((index,)) - dot)
+                    for index in range(self.primal.shape[0])
+                ],
+                shape=self.primal.shape,
+                dtype=self.primal.dtype,
+                device=self.primal.device,
+                layout=self.primal.layout,
+            )
+            return _DualTensor(primal, tangent)
+        if self.primal.ndim == 2:
+            rows, cols = self.primal.shape
+            values: list[float] = []
+            for row in range(rows):
+                dot = sum(
+                    primal._value_at((row, col)) * self.tangent._value_at((row, col))
+                    for col in range(cols)
+                )
+                values.extend(
+                    primal._value_at((row, col)) * (self.tangent._value_at((row, col)) - dot)
+                    for col in range(cols)
+                )
+            return _DualTensor(
+                primal,
+                tensor(
+                    values,
+                    shape=self.primal.shape,
+                    dtype=self.primal.dtype,
+                    device=self.primal.device,
+                    layout=self.primal.layout,
+                ),
+            )
+        raise ValueError("softmax JVP supports 1D or 2D tensors")
 
     def transpose(self) -> "_DualTensor":
         return _DualTensor(self.primal.transpose(), self.tangent.transpose())

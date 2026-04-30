@@ -1,5 +1,5 @@
 from underhfs import tensor, zeros
-from underhfs.autograd import checkpoint, jvp
+from underhfs.autograd import checkpoint, checkpoint_sequential, jvp
 
 
 def test_shape_stride_and_inplace_version():
@@ -83,3 +83,21 @@ def test_checkpoint_marks_training_value_and_keeps_backward():
     y.backward()
     assert x.grad is not None
     assert x.grad.item() == 6.0
+
+
+def test_forward_mode_jvp_for_softmax_view_and_slice():
+    x = tensor([[1.0, 2.0], [3.0, 4.0]])
+    dx = tensor([[0.1, 0.2], [0.3, 0.4]])
+    primal, tangent = jvp(lambda value: value[:, :].reshape(4).softmax(), (x,), (dx,))
+    assert primal.shape == (4,)
+    assert tangent.shape == (4,)
+    assert abs(sum(tangent.tolist())) < 1e-9
+
+
+def test_checkpoint_sequential_marks_chunks_and_keeps_backward():
+    x = tensor(2.0, requires_grad=True)
+    y = checkpoint_sequential([lambda value: value * value, lambda value: value + value], 2, x)
+    assert y._underhfs_checkpoint["mode"] == "eager-recompute-contract"
+    y.backward()
+    assert x.grad is not None
+    assert x.grad.item() == 8.0

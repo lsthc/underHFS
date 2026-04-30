@@ -9,6 +9,7 @@ from underhfs.serialization import (
     BINARY_MAGIC,
     export_onnx,
     import_onnx,
+    load_onnx_state_dict,
     load_binary_state_dict,
     load_state_dict,
     save_binary_state_dict,
@@ -117,6 +118,8 @@ def test_onnx_lite_export_import_manifest(tmp_path=None):
     payload = import_onnx(path)
     assert payload["producer_name"] == "underhfs"
     assert payload["graph"]["name"] == "Linear"
+    assert payload["state_sha256"]
+    assert load_onnx_state_dict(path) == model.state_dict()
     if tmp_path is None:
         path.unlink()
 

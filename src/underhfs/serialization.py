@@ -127,12 +127,15 @@ def export_onnx(
     model_name: str,
     state: dict[str, Any],
     inputs: dict[str, Any] | None = None,
+    include_state: bool = True,
 ) -> None:
+    state_json = json.dumps(state, separators=(",", ":"), sort_keys=True).encode("utf-8")
     payload = {
         "ir_version": 10,
         "producer_name": "underhfs",
         "format": "underhfs.onnx-lite",
         "version": FORMAT_VERSION,
+        "state_sha256": sha256(state_json).hexdigest(),
         "graph": {
             "name": model_name,
             "inputs": inputs or {},
@@ -142,6 +145,8 @@ def export_onnx(
             ],
         },
     }
+    if include_state:
+        payload["state"] = state
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -151,7 +156,18 @@ def import_onnx(path: str | Path) -> dict[str, Any]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if payload.get("format") != "underhfs.onnx-lite":
         raise ValueError("only underhfs.onnx-lite manifests are supported without the optional ONNX runtime")
+    if "state" in payload:
+        state_json = json.dumps(payload["state"], separators=(",", ":"), sort_keys=True).encode("utf-8")
+        if sha256(state_json).hexdigest() != payload.get("state_sha256"):
+            raise ValueError("ONNX-lite state checksum mismatch")
     return payload
+
+
+def load_onnx_state_dict(path: str | Path) -> dict[str, Any]:
+    payload = import_onnx(path)
+    if "state" not in payload:
+        raise ValueError("ONNX-lite manifest does not include embedded state")
+    return payload["state"]
 
 
 def export_manifest(

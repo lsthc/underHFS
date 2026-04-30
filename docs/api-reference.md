@@ -18,6 +18,7 @@ native runtime bring-up phase.
 - `underhfs.autograd.no_grad()`
 - `underhfs.autograd.jvp(function, primals, tangents)`
 - `underhfs.autograd.checkpoint(function, *args, **kwargs)`
+- `underhfs.autograd.checkpoint_sequential(functions, segments, input)`
 
 ## Runtime
 
@@ -42,3 +43,10 @@ native runtime bring-up phase.
 - `underhfs.serve.serve_cpp_manifest(config=None)`
 - `underhfs.serve.open_stream(source, kind=StreamSourceKind.FILE)`
 
+## Serialization
+
+- `underhfs.serialization.save_checkpoint(path, state=..., metadata=...)`
+- `underhfs.serialization.save_binary_state_dict(path, state)`
+- `underhfs.serialization.export_onnx(path, model_name=..., state=..., inputs=...)`
+- `underhfs.serialization.import_onnx(path)`
+- `underhfs.serialization.load_onnx_state_dict(path)`
