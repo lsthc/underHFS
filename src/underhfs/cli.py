@@ -6,7 +6,7 @@ from pathlib import Path
 
 from underhfs import __version__
 from underhfs.benchmarks import run_microbenchmarks
-from underhfs.cuda import device_count, devices, is_available, memory_budgets
+from underhfs.cuda import allocator_stats, device_count, devices, is_available, memory_budgets, stream_stats
 from underhfs.datasets import inspect_text_dataset, write_sample_text_dataset
 from underhfs.diagnostics import doctor
 from underhfs.functional import cross_entropy
@@ -30,6 +30,13 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 def _cmd_bench(args: argparse.Namespace) -> int:
     native = native_status()
+    results = run_microbenchmarks(
+        size=args.size,
+        iterations=args.iterations,
+        warmup=args.warmup,
+        include_cuda=not args.no_cuda,
+    )
+    cuda_runtime = _cuda_runtime_report(native.cuda_enabled)
     payload = {
         "underhfs": __version__,
         "cuda_visible": is_available(),
@@ -38,18 +45,20 @@ def _cmd_bench(args: argparse.Namespace) -> int:
         "memory_budgets": {tier.value: size for tier, size in memory_budgets().items()},
         "native_core": native.available,
         "native_reason": native.reason,
-        "results": [
-            result.to_dict()
-            for result in run_microbenchmarks(
-                size=args.size,
-                iterations=args.iterations,
-                warmup=args.warmup,
-                include_cuda=not args.no_cuda,
-            )
-        ],
+        "cuda_runtime": cuda_runtime,
+        "results": [result.to_dict() for result in results],
     }
     print(json.dumps(payload, indent=2))
     return 0
+
+
+def _cuda_runtime_report(cuda_enabled: bool) -> dict:
+    if not cuda_enabled:
+        return {}
+    try:
+        return {"allocator": allocator_stats(), "stream": stream_stats()}
+    except RuntimeError:
+        return {}
 
 
 def _cmd_doctor(_: argparse.Namespace) -> int:
