@@ -61,6 +61,8 @@ external test and benchmark oracles.
   with shared in-place version counters and gradient scatter for slices.
 - Serving includes a standard-library JSON HTTP server with `/health` and
   `/predict` endpoints in addition to the local Python server.
+- `underhfs.compile` now records eager execution into inspectable GraphIR with
+  input guards and initial elementwise/reduction/attention fusion candidates.
 - CMake + pybind11 native extension scaffold and CUDA kernel scaffold gated
   behind `UNDERHFS_WITH_CUDA`.
 - Native C++ `TensorCore` contract for shape validation, strides, add, mul,

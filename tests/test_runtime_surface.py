@@ -1,7 +1,7 @@
 import json
 from urllib.request import Request, urlopen
 
-from underhfs.compile import CompilePolicy, compile
+from underhfs.compile import CompilePolicy, FusionKind, compile, explain
 from underhfs.cuda import MemoryPolicy, MemoryTier, RuntimePolicy
 from underhfs.data import DataLoader, TensorDataset
 from underhfs.distributed import DistributedDataParallel
@@ -20,9 +20,26 @@ def test_policy_surfaces():
 def test_compile_decorator_attaches_policy():
     @compile(policy=CompilePolicy(enabled=True))
     def fn(x):
-        return x
+        return (x * x + x).sum()
 
     assert fn._underhfs_compile_policy.enabled
+    out = fn(tensor([1.0, 2.0], requires_grad=True))
+    report = fn._underhfs_last_compile_report
+    assert out.item() == 8.0
+    assert report is not None
+    assert report.guards[0].shape == (2,)
+    assert any(node.op == "sum" for node in report.graph.nodes)
+    assert any(group.kind is FusionKind.ELEMENTWISE for group in report.fusion_groups)
+
+
+def test_compile_explain_returns_serializable_report():
+    def fn(x):
+        return (x + x).relu()
+
+    report = explain(fn, tensor([-1.0, 2.0]))
+    payload = report.to_dict()
+    assert payload["guards"][0]["dtype"] == "fp32"
+    assert payload["graph"]["nodes"]
 
 
 def test_data_ddp_and_python_server_surfaces():
