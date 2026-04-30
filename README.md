@@ -19,15 +19,15 @@ external test and benchmark oracles.
 
 ## Why underHFS
 
-- **Own the runtime**: keep the public API Torch-like while building the core
+- **Own the runtime**. keep the public API Torch-like while building the core
   around underHFS storage, autograd, scheduling, and memory policies.
-- **Train beyond one memory tier**: design for VRAM, RAM, NVMe, and future
+- **Train beyond one memory tier**. design for VRAM, RAM, NVMe, and future
   distributed tiers through explicit runtime policies.
-- **Go CUDA-first**: prepare the native backend for C++20, pybind11, CUDA 13.x,
+- **Go CUDA-first**. prepare the native backend for C++20, pybind11, CUDA 13.x,
   cuBLAS, cuDNN, NCCL, custom kernels, and stream-aware scheduling.
-- **Support real model families**: provide the early blocks for transformers,
+- **Support real model families**. provide the early blocks for transformers,
   convolutional models, RL-style heads, serving, and live-streaming workflows.
-- **Stay inspectable**: ship a small executable fallback implementation that can
+- **Stay inspectable**. ship a small executable fallback implementation that can
   be tested locally before the native backend is installed.
 
 ## What Works Now
@@ -50,15 +50,15 @@ external test and benchmark oracles.
 
 underHFS is organized around the same surfaces a full-stack AI platform needs:
 
-- `underhfs.tensor`: Tensor, dtype, device, layout, fallback operations.
-- `underhfs.autograd`: eager backward and future forward-mode/JVP entrypoints.
-- `underhfs.nn`: modules, parameters, transformer blocks, CNN/RL foundations.
-- `underhfs.optim`: SGD, AdamW, fused optimizer and ZeRO-aware optimizer shapes.
-- `underhfs.data`: Dataset/DataLoader primitives.
-- `underhfs.compile`: graph IR, compile policy, fusion policy surface.
-- `underhfs.cuda`: runtime, precision, memory-tier, and CUDA availability policy.
-- `underhfs.distributed`: data/tensor/pipeline/ZeRO policy surface.
-- `underhfs.serve`: Python serving facade and streaming protocol definitions.
+- `underhfs.tensor`. Tensor, dtype, device, layout, fallback operations.
+- `underhfs.autograd`. eager backward and future forward-mode/JVP entrypoints.
+- `underhfs.nn`. modules, parameters, transformer blocks, CNN/RL foundations.
+- `underhfs.optim`. SGD, AdamW, fused optimizer and ZeRO-aware optimizer shapes.
+- `underhfs.data`. Dataset/DataLoader primitives.
+- `underhfs.compile`. graph IR, compile policy, fusion policy surface.
+- `underhfs.cuda`. runtime, precision, memory-tier, and CUDA availability policy.
+- `underhfs.distributed`. data/tensor/pipeline/ZeRO policy surface.
+- `underhfs.serve`. Python serving facade and streaming protocol definitions.
 
 ## Quick Start
 
