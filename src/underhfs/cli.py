@@ -13,7 +13,13 @@ from underhfs.functional import cross_entropy
 from underhfs.native import status as native_status
 from underhfs.nn import TransformerLM
 from underhfs.optim import SGD
-from underhfs.serialization import export_manifest, load_checkpoint, save_checkpoint
+from underhfs.serialization import (
+    export_manifest,
+    load_binary_state_dict,
+    load_checkpoint,
+    save_binary_state_dict,
+    save_checkpoint,
+)
 from underhfs.serve import serve
 from underhfs.tensor import tensor
 from underhfs.text import ByteTokenizer
@@ -160,6 +166,15 @@ def _cmd_checkpoint(args: argparse.Namespace) -> int:
         payload = load_checkpoint(path)
         print(json.dumps({"path": str(path), "metadata": payload["metadata"], "tensors": len(payload["state"])}, indent=2))
         return 0
+    if args.action == "save-binary-smoke":
+        model = _tiny_lm_from_args(args)
+        save_binary_state_dict(path, model.state_dict())
+        print(json.dumps({"saved": str(path), "format": "binary", "parameters": len(model.state_dict())}, indent=2))
+        return 0
+    if args.action == "inspect-binary":
+        state = load_binary_state_dict(path)
+        print(json.dumps({"path": str(path), "format": "binary", "tensors": len(state)}, indent=2))
+        return 0
     print(f"unsupported checkpoint action: {args.action}")
     return 2
 
@@ -241,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
     train.set_defaults(func=_cmd_train)
 
     checkpoint = sub.add_parser("checkpoint")
-    checkpoint.add_argument("action", choices=("save-smoke", "inspect"))
+    checkpoint.add_argument("action", choices=("save-smoke", "inspect", "save-binary-smoke", "inspect-binary"))
     checkpoint.add_argument("path")
     checkpoint.add_argument("--seq-len", type=int, default=4)
     checkpoint.add_argument("--vocab-size", type=int, default=8)

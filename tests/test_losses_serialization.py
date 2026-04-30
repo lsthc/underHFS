@@ -3,7 +3,12 @@ from pathlib import Path
 from underhfs import tensor
 from underhfs.functional import cross_entropy, mse_loss
 from underhfs.nn import Conv2d, Embedding, Linear, SelfAttention
-from underhfs.serialization import load_state_dict, save_state_dict
+from underhfs.serialization import (
+    load_binary_state_dict,
+    load_state_dict,
+    save_binary_state_dict,
+    save_state_dict,
+)
 
 
 def test_mse_loss_backward():
@@ -45,6 +50,25 @@ def test_state_serialization_roundtrip(tmp_path=None):
     assert loaded == model.state_dict()
     if tmp_path is None:
         path.unlink()
+
+
+def test_binary_state_serialization_roundtrip(tmp_path=None):
+    path = Path("tmp_underhfs_state.uhfsbin") if tmp_path is None else tmp_path / "state.uhfsbin"
+    model = Linear(2, 1)
+    save_binary_state_dict(path, model.state_dict())
+    loaded = load_binary_state_dict(path)
+    assert _nested_close(loaded, model.state_dict())
+    assert path.read_bytes().startswith(b"UHFSBIN1")
+    if tmp_path is None:
+        path.unlink()
+
+
+def _nested_close(left, right, tol=1e-6):
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(_nested_close(left[key], right[key], tol) for key in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(_nested_close(a, b, tol) for a, b in zip(left, right, strict=True))
+    return abs(left - right) <= tol
 
 
 def test_conv2d_forward_backward_smoke():

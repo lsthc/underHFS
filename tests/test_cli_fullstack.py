@@ -8,6 +8,7 @@ def test_checkpoint_dataset_and_serve_cli(tmp_path=None):
     root = Path(".underhfs-test") if tmp_path is None else tmp_path
     root.mkdir(exist_ok=True)
     checkpoint = root / "tiny.uhfs.json"
+    binary_checkpoint = root / "tiny.uhfsbin"
     dataset = root / "sample.txt"
     manifest = root / "tiny.export.json"
 
@@ -16,6 +17,8 @@ def test_checkpoint_dataset_and_serve_cli(tmp_path=None):
     assert payload["metadata"]["model"] == "TransformerLM"
     assert payload["state"]
     assert main(["checkpoint", "inspect", str(checkpoint)]) == 0
+    assert main(["checkpoint", "save-binary-smoke", str(binary_checkpoint)]) == 0
+    assert main(["checkpoint", "inspect-binary", str(binary_checkpoint)]) == 0
     assert main(["dataset", str(dataset), "--sample"]) == 0
     assert dataset.exists()
     assert main(["bench", "--size", "2", "--iterations", "1", "--warmup", "0", "--no-cuda"]) == 0
@@ -27,6 +30,7 @@ def test_checkpoint_dataset_and_serve_cli(tmp_path=None):
 
     if tmp_path is None:
         checkpoint.unlink()
+        binary_checkpoint.unlink()
         dataset.unlink()
         manifest.unlink()
         root.rmdir()
