@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+
+_DLL_DIRECTORY_HANDLES: list[Any] = []
+_DLL_DIRECTORY_PATHS: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -13,6 +19,7 @@ class NativeStatus:
 
 def status() -> NativeStatus:
     try:
+        _prepare_windows_cuda_dll_search_path()
         import underhfs._core as _core
     except Exception as exc:
         return NativeStatus(False, str(exc))
@@ -23,9 +30,30 @@ def require_native():
     state = status()
     if not state.available:
         raise RuntimeError(f"underHFS native core is unavailable: {state.reason}")
+    _prepare_windows_cuda_dll_search_path()
     import underhfs._core as _core
 
     return _core
+
+
+def _prepare_windows_cuda_dll_search_path() -> None:
+    if os.name != "nt" or not hasattr(os, "add_dll_directory"):
+        return
+    candidates: list[Path] = []
+    cuda_path = os.environ.get("CUDA_PATH")
+    if cuda_path:
+        candidates.append(Path(cuda_path) / "bin")
+        candidates.append(Path(cuda_path) / "bin" / "x64")
+    cuda_root = Path("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA")
+    if cuda_root.exists():
+        for path in sorted(cuda_root.glob("v*"), reverse=True):
+            candidates.append(path / "bin")
+            candidates.append(path / "bin" / "x64")
+    for candidate in candidates:
+        path = str(candidate)
+        if candidate.exists() and path not in _DLL_DIRECTORY_PATHS:
+            _DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(path))
+            _DLL_DIRECTORY_PATHS.add(path)
 
 
 def probe() -> dict[str, Any]:

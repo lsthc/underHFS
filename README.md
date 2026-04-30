@@ -62,6 +62,8 @@ external test and benchmark oracles.
   allocation, host transfer, add, and 2D matmul.
 - Python Tensor `.cuda()` now creates native CUDA storage for dense fp32 tensors,
   and CUDA Tensor add/matmul use the native GPU storage path.
+- CUDA matmul uses cuBLAS with a cached per-thread handle while preserving
+  underHFS row-major tensor semantics.
 
 ## Product Surface
 

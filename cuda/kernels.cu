@@ -1,3 +1,4 @@
+#include <cublas_v2.h>
 #include <cuda_runtime.h>
 
 #include <numeric>
@@ -15,20 +16,6 @@ extern "C" __global__ void underhfs_add_f32(
   }
 }
 
-extern "C" __global__ void underhfs_matmul_f32(
-    const float* left, const float* right, float* out, int m, int k, int n) {
-  int row = blockIdx.y * blockDim.y + threadIdx.y;
-  int col = blockIdx.x * blockDim.x + threadIdx.x;
-  if (row >= m || col >= n) {
-    return;
-  }
-  float acc = 0.0f;
-  for (int p = 0; p < k; ++p) {
-    acc += left[row * k + p] * right[p * n + col];
-  }
-  out[row * n + col] = acc;
-}
-
 namespace underhfs {
 
 namespace {
@@ -37,6 +24,36 @@ void check_cuda(cudaError_t error, const char* context) {
   if (error != cudaSuccess) {
     throw std::runtime_error(std::string(context) + ": " + cudaGetErrorString(error));
   }
+}
+
+void check_cublas(cublasStatus_t status, const char* context) {
+  if (status != CUBLAS_STATUS_SUCCESS) {
+    throw std::runtime_error(std::string(context) + ": cuBLAS status " +
+                             std::to_string(static_cast<int>(status)));
+  }
+}
+
+class CublasHandle {
+ public:
+  CublasHandle() { check_cublas(cublasCreate(&handle_), "cublasCreate"); }
+  ~CublasHandle() {
+    if (handle_ != nullptr) {
+      cublasDestroy(handle_);
+    }
+  }
+
+  CublasHandle(const CublasHandle&) = delete;
+  CublasHandle& operator=(const CublasHandle&) = delete;
+
+  cublasHandle_t get() const { return handle_; }
+
+ private:
+  cublasHandle_t handle_ = nullptr;
+};
+
+cublasHandle_t cublas_handle() {
+  thread_local CublasHandle handle;
+  return handle.get();
 }
 
 }  // namespace
@@ -137,11 +154,13 @@ CudaTensorF32 CudaTensorF32::matmul(const CudaTensorF32& other) const {
   const auto out_numel = static_cast<std::size_t>(m) * static_cast<std::size_t>(n);
   float* out = nullptr;
   check_cuda(cudaMalloc(&out, out_numel * sizeof(float)), "CudaTensorF32 matmul cudaMalloc");
-  dim3 block(16, 16);
-  dim3 grid((n + block.x - 1) / block.x, (m + block.y - 1) / block.y);
-  underhfs_matmul_f32<<<grid, block>>>(device_, other.device_, out, m, k, n);
   try {
-    check_cuda(cudaGetLastError(), "CudaTensorF32 matmul launch");
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+    check_cublas(
+        cublasSgemm(cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N, n, m, k, &alpha, other.device_, n,
+                    device_, k, &beta, out, n),
+        "CudaTensorF32 matmul cublasSgemm");
     check_cuda(cudaDeviceSynchronize(), "CudaTensorF32 matmul sync");
   } catch (...) {
     cudaFree(out);

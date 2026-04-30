@@ -61,6 +61,17 @@ def test_tensor_uses_native_cuda_matmul_when_available():
     assert out.tolist() == [[19.0, 22.0], [43.0, 50.0]]
 
 
+def test_tensor_uses_native_cuda_rectangular_matmul_when_available():
+    state = status()
+    if not state.cuda_enabled:
+        return
+    left = tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]).cuda()
+    right = tensor([[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]]).cuda()
+    out = left @ right
+    assert out.backend == "native_cuda"
+    assert out.tolist() == [[58.0, 64.0], [139.0, 154.0]]
+
+
 def test_cuda_scalar_ops_preserve_device_when_available():
     state = status()
     if not state.cuda_enabled:
