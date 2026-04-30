@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/uhfs.png" alt="underHFS" width="220">
+  <img src="docs/uhfs.png" alt="underHFS" width="640">
   <h1>underHFS</h1>
   <p><strong>Own the runtime. Train beyond the box.</strong></p>
 </div>
