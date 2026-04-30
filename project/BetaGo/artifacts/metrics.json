@@ -1,0 +1,154 @@
+{
+  "board_size": 9,
+  "train_samples": 96,
+  "eval_samples": 32,
+  "steps": 60,
+  "batch_size": 8,
+  "final_metrics": {
+    "policy_top1": 0.5,
+    "policy_top3": 0.875,
+    "value_mae": 0.23625455480191412,
+    "strategy_accuracy": {
+      "atari": 0.0,
+      "capture": 1.0,
+      "center_influence": 1.0,
+      "connect": 1.0,
+      "corner_framework": 0.0,
+      "defend_atari": 1.0,
+      "shape_balance": 0.0,
+      "side_extension": 0.0
+    }
+  },
+  "history": [
+    {
+      "policy_top1": 0.0,
+      "policy_top3": 0.0,
+      "value_mae": 3.9159245796491784,
+      "strategy_accuracy": {
+        "atari": 0.0,
+        "capture": 0.0,
+        "center_influence": 0.0,
+        "connect": 0.0,
+        "corner_framework": 0.0,
+        "defend_atari": 0.0,
+        "shape_balance": 0.0,
+        "side_extension": 0.0
+      },
+      "step": 0,
+      "loss": 4.5162669864256655
+    },
+    {
+      "policy_top1": 0.5,
+      "policy_top3": 0.75,
+      "value_mae": 0.49748570166508943,
+      "strategy_accuracy": {
+        "atari": 0.0,
+        "capture": 1.0,
+        "center_influence": 1.0,
+        "connect": 1.0,
+        "corner_framework": 0.0,
+        "defend_atari": 1.0,
+        "shape_balance": 0.0,
+        "side_extension": 0.0
+      },
+      "step": 10,
+      "loss": 1.6383553201883305
+    },
+    {
+      "policy_top1": 0.5,
+      "policy_top3": 0.75,
+      "value_mae": 0.10770081112238064,
+      "strategy_accuracy": {
+        "atari": 0.0,
+        "capture": 1.0,
+        "center_influence": 1.0,
+        "connect": 1.0,
+        "corner_framework": 0.0,
+        "defend_atari": 1.0,
+        "shape_balance": 0.0,
+        "side_extension": 0.0
+      },
+      "step": 20,
+      "loss": 1.4994181057104148
+    },
+    {
+      "policy_top1": 0.5,
+      "policy_top3": 0.875,
+      "value_mae": 0.22423925466687755,
+      "strategy_accuracy": {
+        "atari": 0.0,
+        "capture": 1.0,
+        "center_influence": 1.0,
+        "connect": 1.0,
+        "corner_framework": 0.0,
+        "defend_atari": 1.0,
+        "shape_balance": 0.0,
+        "side_extension": 0.0
+      },
+      "step": 30,
+      "loss": 1.3427099233930502
+    },
+    {
+      "policy_top1": 0.5,
+      "policy_top3": 0.875,
+      "value_mae": 0.16074913872009355,
+      "strategy_accuracy": {
+        "atari": 0.0,
+        "capture": 1.0,
+        "center_influence": 1.0,
+        "connect": 1.0,
+        "corner_framework": 0.0,
+        "defend_atari": 1.0,
+        "shape_balance": 0.0,
+        "side_extension": 0.0
+      },
+      "step": 40,
+      "loss": 1.3165914204304543
+    },
+    {
+      "policy_top1": 0.5,
+      "policy_top3": 0.875,
+      "value_mae": 0.20181889786159676,
+      "strategy_accuracy": {
+        "atari": 0.0,
+        "capture": 1.0,
+        "center_influence": 1.0,
+        "connect": 1.0,
+        "corner_framework": 0.0,
+        "defend_atari": 1.0,
+        "shape_balance": 0.0,
+        "side_extension": 0.0
+      },
+      "step": 50,
+      "loss": 1.2293039130999612
+    },
+    {
+      "policy_top1": 0.5,
+      "policy_top3": 0.875,
+      "value_mae": 0.23625455480191412,
+      "strategy_accuracy": {
+        "atari": 0.0,
+        "capture": 1.0,
+        "center_influence": 1.0,
+        "connect": 1.0,
+        "corner_framework": 0.0,
+        "defend_atari": 1.0,
+        "shape_balance": 0.0,
+        "side_extension": 0.0
+      },
+      "step": 59,
+      "loss": 1.1061586872606768
+    }
+  ],
+  "strategies": [
+    "atari",
+    "capture",
+    "center_influence",
+    "connect",
+    "corner_framework",
+    "defend_atari",
+    "shape_balance",
+    "side_extension"
+  ],
+  "artifact": "C:\\Users\\LEE\\Desktop\\underhfs\\project\\BetaGo\\artifacts\\betago_agent_state.json"
+}

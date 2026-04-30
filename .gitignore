@@ -17,3 +17,4 @@ _skbuild/
 cmake-build-*/
 .vscode/
 .idea/
+opencode.json
