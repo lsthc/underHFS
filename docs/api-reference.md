@@ -31,6 +31,14 @@ native runtime bring-up phase.
 - `OffloadExecutor.load_tensor(handle, device=None)`
 - `OffloadExecutor.release(handle)`
 
+## Optimizers
+
+- `underhfs.optim.SGD`
+- `underhfs.optim.AdamW`
+- `underhfs.optim.FusedAdamW`
+- Native CUDA builds expose `_core.cuda_fused_adamw_f32(...)` for fp32 fused
+  AdamW parameter/state updates.
+
 ## Compile
 
 - `underhfs.compile.compile(function=None, policy=None)`

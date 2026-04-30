@@ -132,6 +132,8 @@ class AdamW(Optimizer):
         ]
 
     def _step_param(self, index: int, param: Tensor, beta1: float, beta2: float) -> None:
+        if self._try_native_fused_adamw_param(index, param, beta1, beta2):
+            return
         grad = param.grad + (param * self.weight_decay)
         self.m[index] = self.m[index] * beta1 + grad * (1 - beta1)
         self.v[index] = self.v[index] * beta2 + (grad * grad) * (1 - beta2)
@@ -142,6 +144,42 @@ class AdamW(Optimizer):
         ]
         update = Tensor(update_values, shape=param.shape, dtype=param.dtype, device=param.device, layout=param.layout)
         param.add_(update * -self.lr)
+
+    def _try_native_fused_adamw_param(self, index: int, param: Tensor, beta1: float, beta2: float) -> bool:
+        if param.grad is None or param.device.kind != "cuda" or param.dtype.value != "fp32":
+            return False
+        try:
+            from underhfs.native import require_native
+
+            core = require_native()
+            if not bool(getattr(core, "cuda_enabled", False)) or not hasattr(core, "cuda_fused_adamw_f32"):
+                return False
+            grad = param.grad + (param * self.weight_decay)
+            result = core.cuda_fused_adamw_f32(
+                [float(value) for value in param._flat_values()],
+                [float(value) for value in grad._flat_values()],
+                [float(value) for value in self.m[index]._flat_values()],
+                [float(value) for value in self.v[index]._flat_values()],
+                float(self.lr),
+                float(beta1),
+                float(beta2),
+                float(self.eps),
+                0.0,
+                int(self.step_count),
+            )
+        except Exception:
+            return False
+        param._storage = [float(value) for value in result["param"]]
+        param._storage_offset = 0
+        param._native_cuda = None
+        param._attach_cuda_storage()
+        param.backend = "native_cuda"
+        param._version_ref[0] += 1
+        self.m[index] = Tensor(result["m"], shape=param.shape, dtype=param.dtype, device=param.device, layout=param.layout)
+        self.v[index] = Tensor(result["v"], shape=param.shape, dtype=param.dtype, device=param.device, layout=param.layout)
+        self.m[index]._attach_cuda_storage()
+        self.v[index]._attach_cuda_storage()
+        return True
 
 
 class FusedAdamW(AdamW):

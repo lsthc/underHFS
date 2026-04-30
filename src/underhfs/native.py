@@ -84,6 +84,22 @@ def probe() -> dict[str, Any]:
         left_gpu_matmul = core.CudaTensorF32([1.0, 2.0, 3.0, 4.0], [2, 2])
         right_gpu_matmul = core.CudaTensorF32([5.0, 6.0, 7.0, 8.0], [2, 2])
         result["cuda_tensor_matmul_f32"] = list(left_gpu_matmul.matmul(right_gpu_matmul).to_host())
+        if hasattr(core, "cuda_fused_adamw_f32"):
+            result["cuda_fused_adamw_f32"] = {
+                key: list(value)
+                for key, value in core.cuda_fused_adamw_f32(
+                    [1.0, 2.0],
+                    [0.1, 0.2],
+                    [0.0, 0.0],
+                    [0.0, 0.0],
+                    0.01,
+                    0.9,
+                    0.999,
+                    1e-8,
+                    0.0,
+                    1,
+                ).items()
+            }
         if hasattr(core, "CudaTensorF16"):
             left_f16 = core.CudaTensorF16([1.0, 2.0], [2])
             right_f16 = core.CudaTensorF16([3.0, 4.0], [2])

@@ -102,8 +102,10 @@ external test and benchmark oracles.
   behavior.
 - Compile reports lower GraphIR fusion candidates into an executable eager
   fused plan, giving guard-specialized calls a concrete backend handoff object.
-- Conv2d, fused AdamW, attention fusion, cuDNN, and NCCL now expose explicit
-  backend status/launch-plan contracts so native runtime gaps are inspectable.
+- Fused AdamW now has a native CUDA fp32 update kernel exposed through `_core`
+  and probed by diagnostics; Conv2d/cuDNN, attention fusion, and NCCL expose
+  explicit backend status/launch-plan contracts so remaining native runtime
+  gaps are inspectable.
 - NVMe tensor offload can write, reload, and release Tensor payloads through an
   `OffloadExecutor`; offload payloads now include version and checksum
   validation, prefetch caching, and benchmark verification. Network offload

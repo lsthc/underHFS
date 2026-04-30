@@ -5,6 +5,7 @@
 
 #include <numeric>
 #include <mutex>
+#include <cmath>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -111,6 +112,32 @@ extern "C" __global__ void underhfs_mul_bf16(
   int index = blockIdx.x * blockDim.x + threadIdx.x;
   if (index < n) {
     out[index] = __float2bfloat16(__bfloat162float(left[index]) * __bfloat162float(right[index]));
+  }
+}
+
+extern "C" __global__ void underhfs_fused_adamw_f32(
+    float* param,
+    const float* grad,
+    float* m,
+    float* v,
+    int n,
+    float lr,
+    float beta1,
+    float beta2,
+    float eps,
+    float weight_decay,
+    float bias_correction1,
+    float bias_correction2) {
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < n) {
+    const float decayed_grad = grad[index] + weight_decay * param[index];
+    const float next_m = beta1 * m[index] + (1.0f - beta1) * decayed_grad;
+    const float next_v = beta2 * v[index] + (1.0f - beta2) * decayed_grad * decayed_grad;
+    const float m_hat = next_m / bias_correction1;
+    const float v_hat = next_v / bias_correction2;
+    param[index] -= lr * m_hat / (sqrtf(v_hat) + eps);
+    m[index] = next_m;
+    v[index] = next_v;
   }
 }
 
@@ -768,6 +795,91 @@ std::vector<float> cuda_add_f32_host(const std::vector<float>& left,
   cudaFree(d_right);
   cudaFree(d_out);
   return out;
+}
+
+std::unordered_map<std::string, std::vector<float>> cuda_fused_adamw_f32_host(
+    const std::vector<float>& param,
+    const std::vector<float>& grad,
+    const std::vector<float>& m,
+    const std::vector<float>& v,
+    float lr,
+    float beta1,
+    float beta2,
+    float eps,
+    float weight_decay,
+    int step) {
+  if (param.size() != grad.size() || param.size() != m.size() || param.size() != v.size()) {
+    throw std::invalid_argument("cuda_fused_adamw_f32_host requires equal vector sizes");
+  }
+  if (step <= 0) {
+    throw std::invalid_argument("cuda_fused_adamw_f32_host step must be positive");
+  }
+  const auto n = static_cast<int>(param.size());
+  const auto bytes = param.size() * sizeof(float);
+  std::vector<float> out_param(param.size(), 0.0f);
+  std::vector<float> out_m(param.size(), 0.0f);
+  std::vector<float> out_v(param.size(), 0.0f);
+  float* d_param = nullptr;
+  float* d_grad = nullptr;
+  float* d_m = nullptr;
+  float* d_v = nullptr;
+
+  d_param = cuda_allocator().allocate(bytes, "cuda_fused_adamw param cudaMalloc");
+  d_grad = cuda_allocator().allocate(bytes, "cuda_fused_adamw grad cudaMalloc");
+  d_m = cuda_allocator().allocate(bytes, "cuda_fused_adamw m cudaMalloc");
+  d_v = cuda_allocator().allocate(bytes, "cuda_fused_adamw v cudaMalloc");
+
+  try {
+    check_cuda(cudaMemcpyAsync(d_param, param.data(), bytes, cudaMemcpyHostToDevice,
+                               cuda_runtime().stream()),
+               "cuda_fused_adamw param copy");
+    check_cuda(cudaMemcpyAsync(d_grad, grad.data(), bytes, cudaMemcpyHostToDevice,
+                               cuda_runtime().stream()),
+               "cuda_fused_adamw grad copy");
+    check_cuda(cudaMemcpyAsync(d_m, m.data(), bytes, cudaMemcpyHostToDevice,
+                               cuda_runtime().stream()),
+               "cuda_fused_adamw m copy");
+    check_cuda(cudaMemcpyAsync(d_v, v.data(), bytes, cudaMemcpyHostToDevice,
+                               cuda_runtime().stream()),
+               "cuda_fused_adamw v copy");
+    cuda_runtime().record_copy();
+    cuda_runtime().record_copy();
+    cuda_runtime().record_copy();
+    cuda_runtime().record_copy();
+    const int block = 256;
+    const int grid = (n + block - 1) / block;
+    underhfs_fused_adamw_f32<<<grid, block, 0, cuda_runtime().stream()>>>(
+        d_param, d_grad, d_m, d_v, n, lr, beta1, beta2, eps, weight_decay,
+        1.0f - std::pow(beta1, static_cast<float>(step)),
+        1.0f - std::pow(beta2, static_cast<float>(step)));
+    cuda_runtime().record_launch();
+    check_cuda(cudaGetLastError(), "cuda_fused_adamw launch");
+    check_cuda(cudaMemcpyAsync(out_param.data(), d_param, bytes, cudaMemcpyDeviceToHost,
+                               cuda_runtime().stream()),
+               "cuda_fused_adamw param back copy");
+    check_cuda(cudaMemcpyAsync(out_m.data(), d_m, bytes, cudaMemcpyDeviceToHost,
+                               cuda_runtime().stream()),
+               "cuda_fused_adamw m back copy");
+    check_cuda(cudaMemcpyAsync(out_v.data(), d_v, bytes, cudaMemcpyDeviceToHost,
+                               cuda_runtime().stream()),
+               "cuda_fused_adamw v back copy");
+    cuda_runtime().record_copy();
+    cuda_runtime().record_copy();
+    cuda_runtime().record_copy();
+    cuda_runtime().synchronize("cuda_fused_adamw sync");
+  } catch (...) {
+    cuda_allocator().release(d_param, bytes);
+    cuda_allocator().release(d_grad, bytes);
+    cuda_allocator().release(d_m, bytes);
+    cuda_allocator().release(d_v, bytes);
+    throw;
+  }
+
+  cuda_allocator().release(d_param, bytes);
+  cuda_allocator().release(d_grad, bytes);
+  cuda_allocator().release(d_m, bytes);
+  cuda_allocator().release(d_v, bytes);
+  return {{"param", out_param}, {"m", out_m}, {"v", out_v}};
 }
 
 std::unordered_map<std::string, std::size_t> cuda_allocator_stats() {

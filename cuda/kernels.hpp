@@ -82,6 +82,17 @@ class CudaTensorBF16 {
 
 std::vector<float> cuda_add_f32_host(const std::vector<float>& left,
                                      const std::vector<float>& right);
+std::unordered_map<std::string, std::vector<float>> cuda_fused_adamw_f32_host(
+    const std::vector<float>& param,
+    const std::vector<float>& grad,
+    const std::vector<float>& m,
+    const std::vector<float>& v,
+    float lr,
+    float beta1,
+    float beta2,
+    float eps,
+    float weight_decay,
+    int step);
 std::unordered_map<std::string, std::size_t> cuda_allocator_stats();
 void cuda_empty_cache();
 std::unordered_map<std::string, std::size_t> cuda_stream_stats();
