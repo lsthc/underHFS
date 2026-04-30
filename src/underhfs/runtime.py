@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from underhfs.cuda import MemoryPolicy, MemoryTier
+from underhfs.cuda import MemoryPolicy, MemoryTier, memory_budgets
 from underhfs.tensor import DType, Tensor
 
 
@@ -73,3 +73,8 @@ class MemoryPlanner:
             }
             for tier, budget in self.budgets.items()
         }
+
+
+def planner_from_system(policy: MemoryPolicy | None = None, *, vram_fraction: float = 0.9) -> MemoryPlanner:
+    actual_policy = policy or MemoryPolicy()
+    return MemoryPlanner(actual_policy, budgets=memory_budgets(vram_fraction=vram_fraction))

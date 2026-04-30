@@ -7,7 +7,7 @@ from pathlib import Path
 from shutil import which
 from subprocess import run
 
-from underhfs.cuda import device_count, is_available
+from underhfs.cuda import device_count, devices, is_available, memory_budgets
 from underhfs.native import probe as native_probe
 from underhfs.native import status as native_status
 
@@ -18,6 +18,8 @@ class DoctorReport:
     platform: str
     cuda_visible: bool
     cuda_device_count: int
+    cuda_devices: list[dict]
+    memory_budgets: dict[str, int]
     native_core: bool
     native_cuda: bool
     native_probe: dict | None
@@ -30,6 +32,8 @@ class DoctorReport:
             "platform": self.platform,
             "cuda_visible": self.cuda_visible,
             "cuda_device_count": self.cuda_device_count,
+            "cuda_devices": self.cuda_devices,
+            "memory_budgets": self.memory_budgets,
             "native_core": self.native_core,
             "native_cuda": self.native_cuda,
             "native_probe": self.native_probe,
@@ -41,6 +45,8 @@ class DoctorReport:
 def doctor() -> DoctorReport:
     native = native_status()
     tools = {name: _find_tool(name) for name in ("git", "cmake", "ninja", "nvcc", "cl", "nvidia-smi")}
+    cuda_devices = [device.to_dict() for device in devices()]
+    budgets = {tier.value: size for tier, size in memory_budgets().items()}
     warnings: list[str] = []
     if not native.available:
         warnings.append(f"native core unavailable: {native.reason}")
@@ -63,6 +69,8 @@ def doctor() -> DoctorReport:
         platform=platform.platform(),
         cuda_visible=is_available(),
         cuda_device_count=device_count(),
+        cuda_devices=cuda_devices,
+        memory_budgets=budgets,
         native_core=native.available,
         native_cuda=native.cuda_enabled,
         native_probe=probe_result,

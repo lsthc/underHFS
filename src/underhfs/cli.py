@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from underhfs import __version__
-from underhfs.cuda import device_count, is_available
+from underhfs.cuda import device_count, devices, is_available, memory_budgets
 from underhfs.datasets import inspect_text_dataset, write_sample_text_dataset
 from underhfs.diagnostics import doctor
 from underhfs.functional import cross_entropy
@@ -33,6 +33,8 @@ def _cmd_bench(args: argparse.Namespace) -> int:
         "underhfs": __version__,
         "cuda_visible": is_available(),
         "cuda_device_count": device_count(),
+        "cuda_devices": [device.to_dict() for device in devices()],
+        "memory_budgets": {tier.value: size for tier, size in memory_budgets().items()},
         "native_core": native.available,
         "native_reason": native.reason,
         "note": "native CUDA microbenchmarks are pending CUDA Toolkit installation",

@@ -31,4 +31,6 @@ def test_doctor_report_and_cli():
     report = doctor()
     assert report.python
     assert "git" in report.tools
+    assert isinstance(report.cuda_devices, list)
+    assert "vram" in report.memory_budgets or not report.cuda_visible
     assert main(["doctor"]) == 0
