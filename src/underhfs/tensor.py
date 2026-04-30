@@ -72,6 +72,21 @@ def _prod(shape: Sequence[int]) -> int:
     return size
 
 
+def _resolve_shape(shape: Sequence[int], numel: int) -> tuple[int, ...]:
+    unknown = [index for index, dim in enumerate(shape) if dim == -1]
+    if len(unknown) > 1:
+        raise ValueError("only one inferred dimension is allowed")
+    resolved = list(shape)
+    if unknown:
+        known = _prod([dim for dim in resolved if dim != -1])
+        if known == 0 or numel % known != 0:
+            raise ValueError(f"cannot infer shape {tuple(shape)} for {numel} values")
+        resolved[unknown[0]] = numel // known
+    if any(dim < 0 for dim in resolved):
+        raise ValueError(f"invalid shape {tuple(shape)}")
+    return tuple(resolved)
+
+
 def _contiguous_strides(shape: Sequence[int]) -> tuple[int, ...]:
     stride = 1
     strides: list[int] = []
@@ -149,15 +164,20 @@ class Tensor:
         layout: Layout | str = Layout.DENSE,
         _children: Iterable[Tensor] = (),
         _op: str = "",
+        _storage: list[float] | None = None,
+        _storage_offset: int = 0,
+        _strides: Sequence[int] | None = None,
+        _version_ref: list[int] | None = None,
     ) -> None:
         inferred = _infer_shape(data) if shape is None else tuple(shape)
         flat = _flatten(data)
         expected = _prod(inferred)
         if expected != len(flat):
             raise ValueError(f"shape {inferred} expects {expected} values, got {len(flat)}")
-        self._storage = flat
+        self._storage = flat if _storage is None else _storage
+        self._storage_offset = _storage_offset
         self.shape = tuple(inferred)
-        self.strides = _contiguous_strides(self.shape)
+        self.strides = _contiguous_strides(self.shape) if _strides is None else tuple(_strides)
         self.requires_grad = requires_grad
         self.grad: Tensor | None = None
         self.dtype = DType(dtype)
@@ -167,7 +187,7 @@ class Tensor:
         self._saved_versions = {child: child.version for child in self._prev}
         self._op = _op
         self._backward: Callable[[], None] = lambda: None
-        self._version = 0
+        self._version_ref = [0] if _version_ref is None else _version_ref
         self.backend = "python"
         self._native_cuda = None
 
@@ -177,14 +197,20 @@ class Tensor:
 
     @property
     def version(self) -> int:
-        return self._version
+        return self._version_ref[0]
 
     def numel(self) -> int:
-        return len(self._storage)
+        return _prod(self.shape)
+
+    def is_contiguous(self) -> bool:
+        return self.strides == _contiguous_strides(self.shape)
+
+    def _flat_values(self) -> list[float]:
+        return [self._value_at(index) for index in _iter_indices(self.shape)]
 
     def clone(self) -> Tensor:
         return Tensor(
-            list(self._storage),
+            self.tolist(),
             shape=self.shape,
             requires_grad=self.requires_grad,
             dtype=self.dtype,
@@ -194,7 +220,7 @@ class Tensor:
 
     def detach(self) -> Tensor:
         return Tensor(
-            list(self._storage),
+            self.tolist(),
             shape=self.shape,
             dtype=self.dtype,
             device=self.device,
@@ -227,7 +253,7 @@ class Tensor:
                     "Rebuild with UNDERHFS_WITH_CUDA=ON after installing CUDA Toolkit."
                 )
         out = Tensor(
-            list(self._storage),
+            self.tolist(),
             shape=self.shape,
             requires_grad=self.requires_grad,
             dtype=self.dtype if dtype is None else DType(dtype),
@@ -249,7 +275,7 @@ class Tensor:
 
     def tolist(self) -> Any:
         if self.shape == ():
-            return self._storage[0]
+            return self._value_at(())
 
         def build(prefix: tuple[int, ...], dims: tuple[int, ...]) -> Any:
             if not dims:
@@ -261,14 +287,15 @@ class Tensor:
     def item(self) -> float:
         if self.numel() != 1:
             raise ValueError("item() is only valid for single-value tensors")
-        return self._storage[0]
+        return self._value_at(()) if self.shape == () else self._flat_values()[0]
 
     def argmax(self) -> int:
         if self.numel() == 0:
             raise ValueError("argmax() is not valid for empty tensors")
         best_index = 0
-        best_value = self._storage[0]
-        for index, value in enumerate(self._storage[1:], start=1):
+        values = self._flat_values()
+        best_value = values[0]
+        for index, value in enumerate(values[1:], start=1):
             if value > best_value:
                 best_index = index
                 best_value = value
@@ -277,7 +304,7 @@ class Tensor:
     def _offset(self, index: tuple[int, ...]) -> int:
         if len(index) != len(self.shape):
             raise IndexError(f"expected {len(self.shape)} indices, got {len(index)}")
-        return sum(i * s for i, s in zip(index, self.strides, strict=True))
+        return self._storage_offset + sum(i * s for i, s in zip(index, self.strides, strict=True))
 
     def _value_at(self, index: tuple[int, ...]) -> float:
         return self._storage[self._offset(index)]
@@ -288,19 +315,66 @@ class Tensor:
     def _add_at(self, index: tuple[int, ...], value: float) -> None:
         self._storage[self._offset(index)] += value
 
+    def _view(
+        self,
+        *,
+        shape: Sequence[int],
+        strides: Sequence[int],
+        storage_offset: int,
+        op: str,
+        index_map: Callable[[tuple[int, ...]], tuple[int, ...]] | None = None,
+    ) -> Tensor:
+        out = Tensor(
+            [0.0] * _prod(shape),
+            shape=shape,
+            requires_grad=self.requires_grad,
+            dtype=self.dtype,
+            device=self.device,
+            layout=self.layout,
+            _children=(self,),
+            _op=op,
+            _storage=self._storage,
+            _storage_offset=storage_offset,
+            _strides=strides,
+            _version_ref=self._version_ref,
+        )
+
+        def backward() -> None:
+            if self.requires_grad and out.grad is not None:
+                if index_map is None:
+                    self._accumulate_grad(out.grad.reshape(self.shape))
+                    return
+                grad = zeros(self.shape, dtype=self.dtype, device=self.device, layout=self.layout)
+                for out_index in _iter_indices(out.shape):
+                    grad._add_at(index_map(out_index), out.grad._value_at(out_index))
+                self._accumulate_grad(grad)
+
+        out._backward = backward
+        return out
+
     def _ensure_tensor(self, other: Any) -> Tensor:
         if isinstance(other, Tensor):
             return other
         return tensor(other, dtype=self.dtype, device=self.device, layout=self.layout)
 
     def _native_cpu_eligible(self) -> bool:
-        return self.device.kind == "cpu" and self.layout is Layout.DENSE and self.dtype is DType.FP32
+        return (
+            self.device.kind == "cpu"
+            and self.layout is Layout.DENSE
+            and self.dtype is DType.FP32
+            and self.is_contiguous()
+            and self._storage_offset == 0
+            and self.numel() == len(self._storage)
+        )
 
     def _native_cuda_eligible(self) -> bool:
         return (
             self.device.kind == "cuda"
             and self.layout is Layout.DENSE
             and self.dtype in {DType.FP32, DType.FP16, DType.BF16}
+            and self.is_contiguous()
+            and self._storage_offset == 0
+            and self.numel() == len(self._storage)
         )
 
     def _native_cuda_matmul_eligible(self) -> bool:
@@ -327,6 +401,8 @@ class Tensor:
     def _sync_from_cuda(self) -> None:
         if self._native_cuda is not None:
             self._storage = [float(value) for value in self._native_cuda.to_host()]
+            self._storage_offset = 0
+            self.strides = _contiguous_strides(self.shape)
 
     def _to_native_core(self):
         from underhfs.native import require_native
@@ -511,7 +587,7 @@ class Tensor:
         return self * -1.0
 
     def __pow__(self, power: float) -> Tensor:
-        values = [value**power for value in self._storage]
+        values = [value**power for value in self._flat_values()]
         out = Tensor(
             values,
             shape=self.shape,
@@ -600,12 +676,17 @@ class Tensor:
 
     def add_(self, other: Any) -> Tensor:
         result = self + other
-        self._storage = result._storage
-        self.shape = result.shape
-        self.strides = result.strides
-        self._native_cuda = result._native_cuda
-        self.backend = result.backend
-        self._version += 1
+        if result.shape != self.shape:
+            raise RuntimeError(f"in-place add cannot change tensor shape from {self.shape} to {result.shape}")
+        for index in _iter_indices(self.shape):
+            self._set_at(index, result._value_at(index))
+        if self.is_contiguous() and self._storage_offset == 0 and self.numel() == len(self._storage):
+            self._native_cuda = result._native_cuda
+            self.backend = result.backend
+        else:
+            self._native_cuda = None
+            self.backend = "python"
+        self._version_ref[0] += 1
         return self
 
     def sum(self) -> Tensor:
@@ -640,7 +721,7 @@ class Tensor:
                 out = None
         if out is None:
             out = Tensor(
-                sum(self._storage),
+                sum(self._flat_values()),
                 requires_grad=self.requires_grad,
                 dtype=self.dtype,
                 device=self.device,
@@ -662,7 +743,7 @@ class Tensor:
         return self.sum() / max(1, self.numel())
 
     def relu(self) -> Tensor:
-        values = [max(0.0, value) for value in self._storage]
+        values = [max(0.0, value) for value in self._flat_values()]
         out = Tensor(
             values,
             shape=self.shape,
@@ -677,7 +758,7 @@ class Tensor:
         def backward() -> None:
             if self.requires_grad and out.grad is not None:
                 mask = Tensor(
-                    [1.0 if value > 0 else 0.0 for value in self._storage],
+                    [1.0 if value > 0 else 0.0 for value in self._flat_values()],
                     shape=self.shape,
                     dtype=self.dtype,
                     device=self.device,
@@ -689,7 +770,7 @@ class Tensor:
         return out
 
     def tanh(self) -> Tensor:
-        values = [tanh(value) for value in self._storage]
+        values = [tanh(value) for value in self._flat_values()]
         out = Tensor(
             values,
             shape=self.shape,
@@ -716,7 +797,7 @@ class Tensor:
         return out
 
     def exp(self) -> Tensor:
-        values = [exp(value) for value in self._storage]
+        values = [exp(value) for value in self._flat_values()]
         out = Tensor(
             values,
             shape=self.shape,
@@ -736,7 +817,7 @@ class Tensor:
         return out
 
     def log(self) -> Tensor:
-        values = [log(value) for value in self._storage]
+        values = [log(value) for value in self._flat_values()]
         out = Tensor(
             values,
             shape=self.shape,
@@ -785,13 +866,35 @@ class Tensor:
     def T(self) -> Tensor:
         return self.transpose()
 
+    def view(self, *shape: int) -> Tensor:
+        if len(shape) == 1 and isinstance(shape[0], (tuple, list)):
+            shape = tuple(shape[0])  # type: ignore[assignment]
+        actual_shape = _resolve_shape(shape, self.numel())
+        if not self.is_contiguous():
+            raise ValueError("view requires a contiguous tensor; call reshape() for a copied fallback")
+        if _prod(actual_shape) != self.numel():
+            raise ValueError(f"cannot view {self.shape} as {actual_shape}")
+        out = self._view(
+            shape=actual_shape,
+            strides=_contiguous_strides(actual_shape),
+            storage_offset=self._storage_offset,
+            op="view",
+        )
+        return out
+
+    def flatten(self) -> Tensor:
+        return self.view(self.numel())
+
     def reshape(self, *shape: int) -> Tensor:
         if len(shape) == 1 and isinstance(shape[0], (tuple, list)):
             shape = tuple(shape[0])  # type: ignore[assignment]
+        shape = _resolve_shape(shape, self.numel())
+        if self.is_contiguous():
+            return self.view(*shape)
         if _prod(shape) != self.numel():
             raise ValueError(f"cannot reshape {self.shape} to {shape}")
         out = Tensor(
-            list(self._storage),
+            self._flat_values(),
             shape=shape,
             requires_grad=self.requires_grad,
             dtype=self.dtype,
@@ -808,10 +911,63 @@ class Tensor:
         out._backward = backward
         return out
 
+    def __getitem__(self, key: Any) -> Tensor:
+        if not isinstance(key, tuple):
+            key = (key,)
+        if any(item is Ellipsis for item in key):
+            raise IndexError("ellipsis indexing is not supported yet")
+        if len(key) > self.ndim:
+            raise IndexError(f"too many indices for tensor of dimension {self.ndim}")
+        key = (*key, *(slice(None) for _ in range(self.ndim - len(key))))
+        storage_offset = self._storage_offset
+        shape: list[int] = []
+        strides: list[int] = []
+        index_specs: list[int | range] = []
+        for axis, item in enumerate(key):
+            dim = self.shape[axis]
+            stride = self.strides[axis]
+            if isinstance(item, int):
+                actual = item + dim if item < 0 else item
+                if actual < 0 or actual >= dim:
+                    raise IndexError(f"index {item} is out of bounds for axis {axis} with size {dim}")
+                storage_offset += actual * stride
+                index_specs.append(actual)
+            elif isinstance(item, slice):
+                start, stop, step = item.indices(dim)
+                values = range(start, stop, step)
+                length = len(values)
+                shape.append(length)
+                strides.append(stride * step)
+                if length:
+                    storage_offset += start * stride
+                index_specs.append(values)
+            else:
+                raise IndexError("tensor indices must be integers or slices")
+
+        def index_map(out_index: tuple[int, ...]) -> tuple[int, ...]:
+            out_axis = 0
+            parent: list[int] = []
+            for spec in index_specs:
+                if isinstance(spec, int):
+                    parent.append(spec)
+                else:
+                    parent.append(spec[out_index[out_axis]])
+                    out_axis += 1
+            return tuple(parent)
+
+        return self._view(
+            shape=tuple(shape),
+            strides=tuple(strides),
+            storage_offset=storage_offset,
+            op="slice",
+            index_map=index_map,
+        )
+
     def softmax(self) -> Tensor:
         if self.ndim == 1:
-            max_value = max(self._storage)
-            exps = [exp(v - max_value) for v in self._storage]
+            row = self._flat_values()
+            max_value = max(row)
+            exps = [exp(v - max_value) for v in row]
             denom = sum(exps)
             out = Tensor(
                 [v / denom for v in exps],

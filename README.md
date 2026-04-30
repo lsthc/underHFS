@@ -57,6 +57,8 @@ external test and benchmark oracles.
   addition to fp32.
 - AdamW/FusedAdamW preserve parameter device and dtype in optimizer state, and
   microbenchmarks now report p50/p95 latency alongside throughput.
+- Tensor `view`, `flatten`, and basic slicing now expose stride/offset semantics
+  with shared in-place version counters and gradient scatter for slices.
 - CMake + pybind11 native extension scaffold and CUDA kernel scaffold gated
   behind `UNDERHFS_WITH_CUDA`.
 - Native C++ `TensorCore` contract for shape validation, strides, add, mul,

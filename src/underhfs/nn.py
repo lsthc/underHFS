@@ -62,9 +62,10 @@ class Module:
                 raise KeyError(f"missing parameter {name}")
             replacement = tensor(state[name])
             parameter._storage = replacement._storage
+            parameter._storage_offset = 0
             parameter.shape = replacement.shape
             parameter.strides = replacement.strides
-            parameter._version += 1
+            parameter._version_ref[0] += 1
 
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
