@@ -141,6 +141,49 @@ extern "C" __global__ void underhfs_fused_adamw_f32(
   }
 }
 
+extern "C" __global__ void underhfs_attention_f32(
+    const float* q,
+    const float* k,
+    const float* v,
+    float* out,
+    int tokens,
+    int features,
+    float scale,
+    int causal) {
+  int row = blockIdx.x;
+  int feature = threadIdx.x;
+  if (row >= tokens || feature >= features) {
+    return;
+  }
+  float max_score = -3.402823466e+38F;
+  for (int col = 0; col < tokens; ++col) {
+    if (causal && col > row) {
+      continue;
+    }
+    float score = 0.0f;
+    for (int f = 0; f < features; ++f) {
+      score += q[row * features + f] * k[col * features + f];
+    }
+    score *= scale;
+    max_score = fmaxf(max_score, score);
+  }
+  float denom = 0.0f;
+  float acc = 0.0f;
+  for (int col = 0; col < tokens; ++col) {
+    if (causal && col > row) {
+      continue;
+    }
+    float score = 0.0f;
+    for (int f = 0; f < features; ++f) {
+      score += q[row * features + f] * k[col * features + f];
+    }
+    const float weight = expf(score * scale - max_score);
+    denom += weight;
+    acc += weight * v[col * features + feature];
+  }
+  out[row * features + feature] = acc / denom;
+}
+
 namespace underhfs {
 
 namespace {
@@ -880,6 +923,69 @@ std::unordered_map<std::string, std::vector<float>> cuda_fused_adamw_f32_host(
   cuda_allocator().release(d_m, bytes);
   cuda_allocator().release(d_v, bytes);
   return {{"param", out_param}, {"m", out_m}, {"v", out_v}};
+}
+
+std::vector<float> cuda_attention_f32_host(
+    const std::vector<float>& q,
+    const std::vector<float>& k,
+    const std::vector<float>& v,
+    int tokens,
+    int features,
+    float scale,
+    bool causal) {
+  if (tokens <= 0 || features <= 0) {
+    throw std::invalid_argument("cuda_attention_f32_host requires positive tokens and features");
+  }
+  const auto expected = static_cast<std::size_t>(tokens) * static_cast<std::size_t>(features);
+  if (q.size() != expected || k.size() != expected || v.size() != expected) {
+    throw std::invalid_argument("cuda_attention_f32_host tensor sizes must equal tokens * features");
+  }
+  const auto bytes = expected * sizeof(float);
+  std::vector<float> out(expected, 0.0f);
+  float* d_q = nullptr;
+  float* d_k = nullptr;
+  float* d_v = nullptr;
+  float* d_out = nullptr;
+
+  d_q = cuda_allocator().allocate(bytes, "cuda_attention q cudaMalloc");
+  d_k = cuda_allocator().allocate(bytes, "cuda_attention k cudaMalloc");
+  d_v = cuda_allocator().allocate(bytes, "cuda_attention v cudaMalloc");
+  d_out = cuda_allocator().allocate(bytes, "cuda_attention out cudaMalloc");
+
+  try {
+    check_cuda(cudaMemcpyAsync(d_q, q.data(), bytes, cudaMemcpyHostToDevice,
+                               cuda_runtime().stream()),
+               "cuda_attention q copy");
+    check_cuda(cudaMemcpyAsync(d_k, k.data(), bytes, cudaMemcpyHostToDevice,
+                               cuda_runtime().stream()),
+               "cuda_attention k copy");
+    check_cuda(cudaMemcpyAsync(d_v, v.data(), bytes, cudaMemcpyHostToDevice,
+                               cuda_runtime().stream()),
+               "cuda_attention v copy");
+    cuda_runtime().record_copy();
+    cuda_runtime().record_copy();
+    cuda_runtime().record_copy();
+    underhfs_attention_f32<<<tokens, features, 0, cuda_runtime().stream()>>>(
+        d_q, d_k, d_v, d_out, tokens, features, scale, causal ? 1 : 0);
+    cuda_runtime().record_launch();
+    check_cuda(cudaGetLastError(), "cuda_attention launch");
+    check_cuda(cudaMemcpyAsync(out.data(), d_out, bytes, cudaMemcpyDeviceToHost,
+                               cuda_runtime().stream()),
+               "cuda_attention out copy");
+    cuda_runtime().record_copy();
+    cuda_runtime().synchronize("cuda_attention sync");
+  } catch (...) {
+    cuda_allocator().release(d_q, bytes);
+    cuda_allocator().release(d_k, bytes);
+    cuda_allocator().release(d_v, bytes);
+    cuda_allocator().release(d_out, bytes);
+    throw;
+  }
+  cuda_allocator().release(d_q, bytes);
+  cuda_allocator().release(d_k, bytes);
+  cuda_allocator().release(d_v, bytes);
+  cuda_allocator().release(d_out, bytes);
+  return out;
 }
 
 std::unordered_map<std::string, std::size_t> cuda_allocator_stats() {

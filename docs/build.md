@@ -50,3 +50,17 @@ and CUDA 13.2 layout:
 ```powershell
 scripts\build_cuda_editable.bat
 ```
+
+Vendor acceleration libraries are explicit opt-ins. When requested, CMake fails
+at configure time if the SDK cannot be found:
+
+```powershell
+python -m pip install -e . --config-settings=cmake.define.UNDERHFS_WITH_CUDA=ON --config-settings=cmake.define.UNDERHFS_WITH_CUDNN=ON
+python -m pip install -e . --config-settings=cmake.define.UNDERHFS_WITH_CUDA=ON --config-settings=cmake.define.UNDERHFS_WITH_NCCL=ON
+```
+
+`UNDERHFS_WITH_CUDNN=ON` requires a CMake-visible `CUDA::cudnn` target.
+`UNDERHFS_WITH_NCCL=ON` searches `NCCL_ROOT`, `NCCL_ROOT\include`, and
+`NCCL_ROOT\lib` for `nccl.h` and the NCCL library. Default local builds keep
+both options off so the fallback and CUDA core kernels continue to build on a
+single Windows laptop setup.

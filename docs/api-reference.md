@@ -30,6 +30,11 @@ native runtime bring-up phase.
 - `OffloadExecutor.prefetch_tensor(handle)`
 - `OffloadExecutor.load_tensor(handle, device=None)`
 - `OffloadExecutor.release(handle)`
+- `underhfs.runtime.NetworkOffloadServer(host="127.0.0.1", port=0)`
+- `underhfs.runtime.NetworkOffloadClient(base_url)`
+- `NetworkOffloadClient.offload_tensor(tensor)`
+- `NetworkOffloadClient.load_tensor(handle, device=None)`
+- `NetworkOffloadClient.release(handle)`
 
 ## Optimizers
 
@@ -38,6 +43,8 @@ native runtime bring-up phase.
 - `underhfs.optim.FusedAdamW`
 - Native CUDA builds expose `_core.cuda_fused_adamw_f32(...)` for fp32 fused
   AdamW parameter/state updates.
+- Native CUDA builds expose `_core.cuda_attention_f32(q, k, v, tokens, features, scale, causal)`
+  for supported contiguous fp32 attention inference paths.
 
 ## Compile
 
@@ -51,9 +58,14 @@ native runtime bring-up phase.
 - `underhfs.serve.serve(handler)`
 - `underhfs.serve.serve_http(handler, config=None)`
 - `underhfs.serve.serve_websocket(handler, config=None)`
+- `underhfs.serve.serve_websocket_loop(handler, config=None)`
 - `underhfs.serve.serve_grpc_manifest(config=None)`
 - `underhfs.serve.serve_cpp_manifest(config=None)`
 - `underhfs.serve.open_stream(source, kind=StreamSourceKind.FILE)`
+
+`open_stream` supports built-in file byte streaming, OpenCV-backed webcam/file
+frames when `cv2` is installed, and FFmpeg subprocess streaming for RTSP/HLS
+when `ffmpeg` is available on `PATH`.
 
 ## Serialization
 

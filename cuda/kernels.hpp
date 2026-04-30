@@ -93,6 +93,14 @@ std::unordered_map<std::string, std::vector<float>> cuda_fused_adamw_f32_host(
     float eps,
     float weight_decay,
     int step);
+std::vector<float> cuda_attention_f32_host(
+    const std::vector<float>& q,
+    const std::vector<float>& k,
+    const std::vector<float>& v,
+    int tokens,
+    int features,
+    float scale,
+    bool causal);
 std::unordered_map<std::string, std::size_t> cuda_allocator_stats();
 void cuda_empty_cache();
 std::unordered_map<std::string, std::size_t> cuda_stream_stats();

@@ -241,6 +241,9 @@ class SelfAttention(Module):
         q = self.q_proj(x)
         k = self.k_proj(x)
         v = self.v_proj(x)
+        native = _try_native_attention(q, k, v, self.features, causal=False)
+        if native is not None:
+            return self.out_proj(native)
         scores = (q @ k.T) / sqrt(self.features)
         weights = scores.softmax()
         return self.out_proj(weights @ v)
@@ -254,6 +257,9 @@ class CausalSelfAttention(SelfAttention):
         q = self.q_proj(x)
         k = self.k_proj(x)
         v = self.v_proj(x)
+        native = _try_native_attention(q, k, v, self.features, causal=True)
+        if native is not None:
+            return self.out_proj(native)
         scores = (q @ k.T) / sqrt(self.features)
         mask_values = [
             0.0 if col <= row else -1.0e9
@@ -476,3 +482,43 @@ class CrossEntropyLoss(Module):
 
 def _pair(value: int | tuple[int, int]) -> tuple[int, int]:
     return value if isinstance(value, tuple) else (value, value)
+
+
+def _try_native_attention(q: Tensor, k: Tensor, v: Tensor, features: int, *, causal: bool) -> Tensor | None:
+    if (
+        q.device.kind != "cuda"
+        or k.device != q.device
+        or v.device != q.device
+        or q.dtype.value != "fp32"
+        or k.dtype != q.dtype
+        or v.dtype != q.dtype
+        or q.shape != k.shape
+        or q.shape != v.shape
+        or q.ndim != 2
+        or q.shape[1] != features
+        or q.requires_grad
+        or k.requires_grad
+        or v.requires_grad
+    ):
+        return None
+    try:
+        from underhfs.native import require_native
+
+        core = require_native()
+        if not hasattr(core, "cuda_attention_f32"):
+            return None
+        values = core.cuda_attention_f32(
+            [float(value) for value in q._flat_values()],
+            [float(value) for value in k._flat_values()],
+            [float(value) for value in v._flat_values()],
+            int(q.shape[0]),
+            int(q.shape[1]),
+            float(1.0 / sqrt(features)),
+            bool(causal),
+        )
+    except Exception:
+        return None
+    out = tensor(values, shape=q.shape, requires_grad=q.requires_grad or k.requires_grad or v.requires_grad, device=q.device)
+    out.backend = "native_cuda_attention"
+    out._attach_cuda_storage()
+    return out

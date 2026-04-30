@@ -34,6 +34,7 @@ PYBIND11_MODULE(_core, m) {
 #ifdef UNDERHFS_WITH_CUDA
   m.def("cuda_add_f32", &underhfs::cuda_add_f32_host);
   m.def("cuda_fused_adamw_f32", &underhfs::cuda_fused_adamw_f32_host);
+  m.def("cuda_attention_f32", &underhfs::cuda_attention_f32_host);
   m.def("cuda_allocator_stats", &underhfs::cuda_allocator_stats);
   m.def("cuda_empty_cache", &underhfs::cuda_empty_cache);
   m.def("cuda_stream_stats", &underhfs::cuda_stream_stats);

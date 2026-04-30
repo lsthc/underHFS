@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import json
+import base64
+from hashlib import sha1
 from dataclasses import dataclass
 from enum import Enum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import socket
+from shutil import which
+from subprocess import PIPE, Popen
 from threading import Thread
 from typing import Any, Callable, Iterator
 
@@ -141,6 +146,68 @@ class JsonWebSocketServer(PythonServer):
         return json.dumps({"result": self.predict(payload)})
 
 
+class WebSocketPredictServer(JsonWebSocketServer):
+    def __init__(self, handler: Callable[[Any], Any], config: ServeConfig | None = None) -> None:
+        super().__init__(handler, config)
+        self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._socket.bind((self.config.host, self.config.port))
+        self._socket.listen(16)
+        self.host, self.port = self._socket.getsockname()
+        self._thread: Thread | None = None
+        self._closed = False
+
+    @property
+    def url(self) -> str:
+        return f"ws://{self.host}:{self.port}"
+
+    def start(self) -> "WebSocketPredictServer":
+        if self._thread is None:
+            self._thread = Thread(target=self._serve_forever, daemon=True)
+            self._thread.start()
+        return self
+
+    def close(self) -> None:
+        self._closed = True
+        try:
+            self._socket.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self._socket.close()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+
+    def _serve_forever(self) -> None:
+        while not self._closed:
+            try:
+                client, _ = self._socket.accept()
+            except OSError:
+                break
+            Thread(target=self._handle_client, args=(client,), daemon=True).start()
+
+    def _handle_client(self, client: socket.socket) -> None:
+        with client:
+            request = client.recv(4096).decode("utf-8", errors="ignore")
+            key = _websocket_header(request, "Sec-WebSocket-Key")
+            if not key:
+                return
+            accept = base64.b64encode(sha1((key + _WEBSOCKET_GUID).encode("ascii")).digest()).decode("ascii")
+            client.sendall(
+                (
+                    "HTTP/1.1 101 Switching Protocols\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    f"Sec-WebSocket-Accept: {accept}\r\n\r\n"
+                ).encode("ascii")
+            )
+            while not self._closed:
+                text = _recv_ws_text(client)
+                if text is None:
+                    break
+                client.sendall(_encode_ws_text(self.predict_frame(text)))
+
+
 @dataclass
 class ServingManifest:
     protocol: ServingProtocol
@@ -168,6 +235,10 @@ def serve_websocket(handler: Callable[[Any], Any], config: ServeConfig | None = 
     return JsonWebSocketServer(handler, config)
 
 
+def serve_websocket_loop(handler: Callable[[Any], Any], config: ServeConfig | None = None) -> WebSocketPredictServer:
+    return WebSocketPredictServer(handler, config)
+
+
 def serve_grpc_manifest(config: ServeConfig | None = None) -> ServingManifest:
     return ServingManifest(ServingProtocol.GRPC, "underhfs.grpc.JsonPredictService", config or ServeConfig())
 
@@ -183,8 +254,8 @@ def protocol_capabilities() -> list[ProtocolCapability]:
         ProtocolCapability(
             ServingProtocol.WEBSOCKET,
             True,
-            "JSON frame adapter",
-            "network upgrade loop is planned; frame-level serving is available",
+            "standard-library WebSocket JSON server",
+            "supports text-frame predict loops for local serving",
         ),
         ProtocolCapability(
             ServingProtocol.GRPC,
@@ -241,6 +312,118 @@ def open_stream(source: str, kind: StreamSourceKind = StreamSourceKind.FILE, *, 
                 yield StreamFrame(index=index, data=chunk, source=str(path), kind=kind)
                 index += 1
         return
-    if kind in {StreamSourceKind.RTSP, StreamSourceKind.HLS, StreamSourceKind.WEBRTC, StreamSourceKind.WEBCAM}:
-        raise RuntimeError(f"{kind.value} streaming requires optional FFmpeg/OpenCV/WebRTC integration")
+    if kind is StreamSourceKind.WEBCAM:
+        yield from _open_opencv_stream(source, kind, chunk_bytes=chunk_bytes)
+        return
+    if kind in {StreamSourceKind.RTSP, StreamSourceKind.HLS}:
+        yield from _open_ffmpeg_stream(source, kind, chunk_bytes=chunk_bytes)
+        return
+    if kind is StreamSourceKind.WEBRTC:
+        raise RuntimeError("webrtc streaming requires an optional WebRTC transport adapter")
     raise RuntimeError(f"{kind.value} streaming requires a configured network transport")
+
+
+_WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+def _websocket_header(request: str, name: str) -> str:
+    prefix = f"{name.lower()}:"
+    for line in request.splitlines():
+        if line.lower().startswith(prefix):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def _recv_exact(sock: socket.socket, nbytes: int) -> bytes | None:
+    chunks: list[bytes] = []
+    remaining = nbytes
+    while remaining:
+        chunk = sock.recv(remaining)
+        if not chunk:
+            return None
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _recv_ws_text(sock: socket.socket) -> str | None:
+    header = _recv_exact(sock, 2)
+    if header is None:
+        return None
+    opcode = header[0] & 0x0F
+    masked = bool(header[1] & 0x80)
+    length = header[1] & 0x7F
+    if opcode == 0x8:
+        return None
+    if opcode != 0x1:
+        raise RuntimeError("only WebSocket text frames are supported")
+    if length == 126:
+        extended = _recv_exact(sock, 2)
+        if extended is None:
+            return None
+        length = int.from_bytes(extended, "big")
+    elif length == 127:
+        extended = _recv_exact(sock, 8)
+        if extended is None:
+            return None
+        length = int.from_bytes(extended, "big")
+    mask = _recv_exact(sock, 4) if masked else b"\x00\x00\x00\x00"
+    payload = _recv_exact(sock, length)
+    if payload is None or mask is None:
+        return None
+    if masked:
+        payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+    return payload.decode("utf-8")
+
+
+def _encode_ws_text(text: str) -> bytes:
+    payload = text.encode("utf-8")
+    if len(payload) < 126:
+        return bytes([0x81, len(payload)]) + payload
+    if len(payload) < 65536:
+        return bytes([0x81, 126]) + len(payload).to_bytes(2, "big") + payload
+    return bytes([0x81, 127]) + len(payload).to_bytes(8, "big") + payload
+
+
+def _open_ffmpeg_stream(source: str, kind: StreamSourceKind, *, chunk_bytes: int) -> Iterator[StreamFrame]:
+    if which("ffmpeg") is None:
+        raise RuntimeError(f"{kind.value} streaming requires ffmpeg on PATH")
+    process = Popen(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", source, "-f", "rawvideo", "-"],
+        stdout=PIPE,
+        stderr=PIPE,
+    )
+    assert process.stdout is not None
+    try:
+        index = 0
+        while True:
+            chunk = process.stdout.read(chunk_bytes)
+            if not chunk:
+                break
+            yield StreamFrame(index=index, data=chunk, source=source, kind=kind)
+            index += 1
+    finally:
+        process.terminate()
+
+
+def _open_opencv_stream(source: str, kind: StreamSourceKind, *, chunk_bytes: int) -> Iterator[StreamFrame]:
+    try:
+        import cv2
+    except ImportError as exc:
+        raise RuntimeError("webcam streaming requires opencv-python") from exc
+    capture_source: int | str = int(source) if source.isdigit() else source
+    capture = cv2.VideoCapture(capture_source)
+    if not capture.isOpened():
+        raise RuntimeError(f"could not open OpenCV stream source: {source}")
+    try:
+        index = 0
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            data = frame.tobytes()
+            for offset in range(0, len(data), chunk_bytes):
+                yield StreamFrame(index=index, data=data[offset : offset + chunk_bytes], source=source, kind=kind)
+                index += 1
+    finally:
+        capture.release()

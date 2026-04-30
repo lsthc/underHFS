@@ -1,6 +1,6 @@
 from underhfs import tensor
 from underhfs.cuda import MemoryPolicy, MemoryTier, _parse_nvidia_smi_devices
-from underhfs.runtime import MemoryPlanner, OffloadExecutor, planner_from_system
+from underhfs.runtime import MemoryPlanner, NetworkOffloadClient, NetworkOffloadServer, OffloadExecutor, planner_from_system
 from underhfs.tensor import DType
 
 
@@ -76,3 +76,21 @@ def test_nvme_offload_executor_rejects_corruption(tmp_path=None):
         raise AssertionError("corrupted offload payload should fail validation")
     finally:
         executor.release(handle)
+
+
+def test_network_offload_http_roundtrip():
+    server = NetworkOffloadServer(port=0).start()
+    try:
+        client = NetworkOffloadClient(server.url)
+        handle = client.offload_tensor(tensor([[1.0, 2.0]]))
+        assert handle.tier is MemoryTier.NETWORK
+        assert client.load_tensor(handle).tolist() == [[1.0, 2.0]]
+        client.release(handle)
+        try:
+            client.load_tensor(handle)
+        except Exception as exc:
+            assert "not found" in str(exc).lower() or "404" in str(exc)
+        else:
+            raise AssertionError("released network offload handle should not load")
+    finally:
+        server.close()

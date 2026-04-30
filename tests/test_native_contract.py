@@ -22,6 +22,8 @@ def test_native_contract_probe_when_available():
         assert "cuda_fused_adamw_f32" in result
         assert abs(result["cuda_fused_adamw_f32"]["m"][0] - 0.01) < 1e-6
         assert abs(result["cuda_fused_adamw_f32"]["m"][1] - 0.02) < 1e-6
+        assert "cuda_attention_f32" in result
+        assert len(result["cuda_attention_f32"]) == 4
         assert result["cuda_tensor_add_f16"] == [4.0, 6.0]
         assert result["cuda_tensor_mul_f16"] == [3.0, 8.0]
         assert result["cuda_tensor_add_bf16"] == [4.0, 6.0]
@@ -199,3 +201,26 @@ def test_native_cuda_fused_adamw_kernel_when_available():
     assert result["param"][1] < 2.0
     assert result["m"][0] > 0.0
     assert result["v"][1] > 0.0
+
+
+def test_native_cuda_attention_kernel_when_available():
+    state = status()
+    if not state.cuda_enabled:
+        return
+    from underhfs.native import require_native
+
+    core = require_native()
+    if not hasattr(core, "cuda_attention_f32"):
+        return
+    result = core.cuda_attention_f32(
+        [1.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [1.0, 2.0, 3.0, 4.0],
+        2,
+        2,
+        1.0,
+        False,
+    )
+    assert len(result) == 4
+    assert result[0] > 1.0
+    assert result[3] > 3.0

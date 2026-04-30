@@ -87,14 +87,19 @@ external test and benchmark oracles.
 - CUDA/runtime capability reporting now lists supported op/dtype/device
   combinations and raises explicit errors for unsupported kernels instead of
   hiding missing fp8/int8/int4 or native-backward coverage.
+- Native CMake builds expose explicit `UNDERHFS_WITH_CUDNN` and
+  `UNDERHFS_WITH_NCCL` gates. Requested cuDNN/NCCL builds now fail during
+  configuration when the vendor SDK is missing instead of producing a partial
+  binary.
 - Memory benchmarks now include a tier-pressure report showing placement,
   offload events, OOM avoidance, and bottleneck tiers.
 - Distributed execution has a deterministic world-size-1 process group with
   barrier, broadcast, all-reduce, DDP state/parameter passthrough, and `no_sync`
   semantics while multi-process NCCL remains reserved.
 - Serving exposes protocol capabilities, routes both `/predict` and
-  `/v1/predict` for JSON HTTP, provides a JSON WebSocket frame adapter, and
-  emits gRPC/C++ serving manifests for native deployment paths.
+  `/v1/predict` for JSON HTTP, provides a real standard-library WebSocket
+  prediction loop, and emits gRPC/C++ serving manifests for native deployment
+  paths.
 - Forward-mode `autograd.jvp` is available for core eager Tensor arithmetic,
   matmul, reductions, view/reshape/slice, softmax, and common elementwise ops.
 - Activation checkpointing now exposes an eager recompute contract plus
@@ -103,20 +108,24 @@ external test and benchmark oracles.
 - Compile reports lower GraphIR fusion candidates into an executable eager
   fused plan, giving guard-specialized calls a concrete backend handoff object.
 - Fused AdamW now has a native CUDA fp32 update kernel exposed through `_core`
-  and probed by diagnostics; Conv2d/cuDNN, attention fusion, and NCCL expose
-  explicit backend status/launch-plan contracts so remaining native runtime
-  gaps are inspectable.
+  and probed by diagnostics; native CUDA fp32 scaled-dot-product attention is
+  exposed through `_core.cuda_attention_f32` and used by attention modules for
+  supported inference tensors.
 - NVMe tensor offload can write, reload, and release Tensor payloads through an
   `OffloadExecutor`; offload payloads now include version and checksum
-  validation, prefetch caching, and benchmark verification. Network offload
-  remains a configured transport extension.
-- ONNX export/import has an `underhfs.onnx-lite` path with embedded state,
-  checksum validation, and state_dict reload while full ONNX protobuf execution
-  remains optional-runtime work.
-- WebSocket serving has a JSON frame adapter, gRPC/C++ serving emit stable
-  manifests, and file streaming yields byte frames while FFmpeg/OpenCV/WebRTC
-  integrations remain optional transport backends.
-- Release planning now includes a wheel/CUDA matrix and API reference in docs.
+  validation, prefetch caching, and benchmark verification. Network offload now
+  has a standard-library HTTP JSON transport with upload, load, release, and
+  checksum validation.
+- ONNX export/import keeps the `underhfs.onnx-lite` fallback and uses a real
+  optional `onnx` protobuf path when the dependency is installed.
+- Serving includes JSON HTTP and a standard-library WebSocket prediction loop;
+  gRPC remains optional-dependency gated, and the build now emits a minimal C++
+  stdin/stdout serving executable.
+- File streaming remains built in, OpenCV webcam/file and FFmpeg RTSP/HLS paths
+  are dependency-gated adapters, and WebRTC stays an explicit optional transport
+  boundary.
+- Release planning now includes wheel/CUDA scripts, a local release-check
+  script, and API reference in docs.
 
 ## Product Surface
 
@@ -167,7 +176,9 @@ before `pytest` is installed.
 
 ## Native Backend Path
 
-The native backend is scaffolded but not required for the Python fallback.
+The native backend is not required for the Python fallback, but CUDA builds now
+exercise real kernels for fp32 add, mul, sum, matmul, fused AdamW, and
+scaled-dot-product attention.
 
 Required tools:
 

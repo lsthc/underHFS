@@ -129,6 +129,8 @@ def export_onnx(
     inputs: dict[str, Any] | None = None,
     include_state: bool = True,
 ) -> None:
+    if _try_export_real_onnx(path, model_name=model_name, state=state, inputs=inputs):
+        return
     state_json = json.dumps(state, separators=(",", ":"), sort_keys=True).encode("utf-8")
     payload = {
         "ir_version": 10,
@@ -153,6 +155,12 @@ def export_onnx(
 
 
 def import_onnx(path: str | Path) -> dict[str, Any]:
+    try:
+        return _try_import_real_onnx(path)
+    except ImportError:
+        pass
+    except Exception:
+        pass
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if payload.get("format") != "underhfs.onnx-lite":
         raise ValueError("only underhfs.onnx-lite manifests are supported without the optional ONNX runtime")
@@ -168,6 +176,80 @@ def load_onnx_state_dict(path: str | Path) -> dict[str, Any]:
     if "state" not in payload:
         raise ValueError("ONNX-lite manifest does not include embedded state")
     return payload["state"]
+
+
+def _try_export_real_onnx(
+    path: str | Path,
+    *,
+    model_name: str,
+    state: dict[str, Any],
+    inputs: dict[str, Any] | None,
+) -> bool:
+    try:
+        import onnx
+        from onnx import TensorProto, helper
+    except ImportError:
+        return False
+    initializers = []
+    for name, value in state.items():
+        flat = _flatten_state_value(value)
+        initializers.append(
+            helper.make_tensor(
+                name=name,
+                data_type=TensorProto.FLOAT,
+                dims=_shape_of(value),
+                vals=flat,
+            )
+        )
+    graph_inputs = [
+        helper.make_tensor_value_info(
+            name,
+            TensorProto.FLOAT,
+            spec.get("shape", []),
+        )
+        for name, spec in (inputs or {}).items()
+    ]
+    graph = helper.make_graph(
+        nodes=[],
+        name=model_name,
+        inputs=graph_inputs,
+        outputs=[],
+        initializer=initializers,
+    )
+    model = helper.make_model(graph, producer_name="underhfs")
+    model.metadata_props.append(onnx.StringStringEntryProto(key="format", value="underhfs.onnx"))
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    onnx.save(model, str(target))
+    return True
+
+
+def _try_import_real_onnx(path: str | Path) -> dict[str, Any]:
+    try:
+        import onnx
+        from onnx import numpy_helper
+    except ImportError:
+        raise
+    model = onnx.load(str(path))
+    return {
+        "format": "underhfs.onnx",
+        "producer_name": model.producer_name,
+        "graph": {
+            "name": model.graph.name,
+            "initializers": [
+                {
+                    "name": tensor_proto.name,
+                    "dims": list(tensor_proto.dims),
+                    "data_type": str(tensor_proto.data_type),
+                }
+                for tensor_proto in model.graph.initializer
+            ],
+        },
+        "state": {
+            tensor_proto.name: numpy_helper.to_array(tensor_proto).tolist()
+            for tensor_proto in model.graph.initializer
+        },
+    }
 
 
 def export_manifest(

@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+from threading import Thread
+from typing import Any
+from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from underhfs.cuda import MemoryPolicy, MemoryTier, memory_budgets
@@ -197,6 +201,155 @@ class OffloadExecutor:
 
     def cache_info(self) -> dict[str, int]:
         return {"prefetched_tensors": len(self._prefetch_cache)}
+
+
+class NetworkOffloadServer:
+    def __init__(self, host: str = "127.0.0.1", port: int = 0) -> None:
+        self._store: dict[str, dict[str, Any]] = {}
+        handler = self._handler()
+        self._server = ThreadingHTTPServer((host, port), handler)
+        self.host, self.port = self._server.server_address
+        self._thread: Thread | None = None
+
+    @property
+    def url(self) -> str:
+        return f"http://{self.host}:{self.port}"
+
+    def start(self) -> "NetworkOffloadServer":
+        if self._thread is None:
+            self._thread = Thread(target=self._server.serve_forever, daemon=True)
+            self._thread.start()
+        return self
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+
+    def _handler(self):
+        store = self._store
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                if self.path == "/health":
+                    self._send_json({"status": "ok", "tensors": len(store)})
+                    return
+                if self.path.startswith("/load/"):
+                    ident = self.path.rsplit("/", 1)[-1]
+                    if ident not in store:
+                        self._send_json({"error": "not found"}, status=404)
+                        return
+                    self._send_json(store[ident])
+                    return
+                self._send_json({"error": "not found"}, status=404)
+
+            def do_POST(self) -> None:
+                if self.path != "/upload":
+                    self._send_json({"error": "not found"}, status=404)
+                    return
+                try:
+                    payload = self._read_json()
+                    _validate_network_payload(payload)
+                    store[payload["id"]] = payload
+                    self._send_json({"ok": True, "id": payload["id"]})
+                except Exception as exc:
+                    self._send_json({"error": str(exc)}, status=400)
+
+            def do_DELETE(self) -> None:
+                if not self.path.startswith("/release/"):
+                    self._send_json({"error": "not found"}, status=404)
+                    return
+                ident = self.path.rsplit("/", 1)[-1]
+                store.pop(ident, None)
+                self._send_json({"ok": True, "id": ident})
+
+            def log_message(self, *_args) -> None:
+                return
+
+            def _read_json(self) -> dict[str, Any]:
+                length = int(self.headers.get("Content-Length", "0"))
+                return json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+
+            def _send_json(self, payload: Any, status: int = 200) -> None:
+                encoded = json.dumps(payload).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+
+        return Handler
+
+
+class NetworkOffloadClient:
+    def __init__(self, base_url: str) -> None:
+        self.base_url = base_url.rstrip("/")
+
+    def offload_tensor(self, value: Tensor) -> OffloadHandle:
+        ident = uuid4().hex
+        data = value.detach().tolist()
+        data_bytes = json.dumps(data, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        payload = {
+            "format": "underhfs.network-offload-tensor",
+            "version": 1,
+            "id": ident,
+            "shape": list(value.shape),
+            "dtype": value.dtype.value,
+            "device": str(value.device),
+            "data_sha256": sha256(data_bytes).hexdigest(),
+            "data": data,
+        }
+        encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        self._request("/upload", method="POST", data=encoded)
+        return OffloadHandle(
+            id=ident,
+            tier=MemoryTier.NETWORK,
+            path=f"{self.base_url}/load/{ident}",
+            bytes=len(encoded),
+            shape=value.shape,
+            dtype=value.dtype,
+            device=str(value.device),
+            sha256=sha256(encoded).hexdigest(),
+        )
+
+    def load_tensor(self, handle: OffloadHandle, *, device: str | None = None) -> Tensor:
+        payload = self._request(f"/load/{handle.id}")
+        encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        if handle.sha256 and sha256(encoded).hexdigest() != handle.sha256:
+            raise ValueError("network offload payload checksum mismatch")
+        _validate_network_payload(payload)
+        if tuple(payload["shape"]) != handle.shape:
+            raise ValueError("network offload tensor shape mismatch")
+        out = tensor(payload["data"], dtype=handle.dtype)
+        return out.to(device) if device is not None else out
+
+    def release(self, handle: OffloadHandle) -> None:
+        self._request(f"/release/{handle.id}", method="DELETE")
+
+    def _request(self, path: str, *, method: str = "GET", data: bytes | None = None) -> Any:
+        request = Request(
+            f"{self.base_url}{path}",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method=method,
+        )
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if isinstance(payload, dict) and "error" in payload:
+            raise RuntimeError(str(payload["error"]))
+        return payload
+
+
+def _validate_network_payload(payload: dict[str, Any]) -> None:
+    if payload.get("format") != "underhfs.network-offload-tensor":
+        raise ValueError("not an underhfs network offload tensor")
+    if payload.get("version") != 1:
+        raise ValueError(f"unsupported network offload tensor version: {payload.get('version')}")
+    data_bytes = json.dumps(payload["data"], separators=(",", ":"), sort_keys=True).encode("utf-8")
+    if sha256(data_bytes).hexdigest() != payload.get("data_sha256"):
+        raise ValueError("network offload tensor data checksum mismatch")
 
 
 def planner_from_system(policy: MemoryPolicy | None = None, *, vram_fraction: float = 0.9) -> MemoryPlanner:

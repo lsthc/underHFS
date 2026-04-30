@@ -100,6 +100,18 @@ def probe() -> dict[str, Any]:
                     1,
                 ).items()
             }
+        if hasattr(core, "cuda_attention_f32"):
+            result["cuda_attention_f32"] = list(
+                core.cuda_attention_f32(
+                    [1.0, 0.0, 0.0, 1.0],
+                    [1.0, 0.0, 0.0, 1.0],
+                    [1.0, 2.0, 3.0, 4.0],
+                    2,
+                    2,
+                    1.0,
+                    False,
+                )
+            )
         if hasattr(core, "CudaTensorF16"):
             left_f16 = core.CudaTensorF16([1.0, 2.0], [2])
             right_f16 = core.CudaTensorF16([3.0, 4.0], [2])

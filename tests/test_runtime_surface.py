@@ -1,4 +1,7 @@
 import json
+import base64
+import os
+import socket
 from urllib.request import Request, urlopen
 
 from underhfs.compile import CompilePolicy, FusionKind, compile, explain, lower_to_plan
@@ -20,6 +23,7 @@ from underhfs.serve import (
     serve_http,
     serve_protocol,
     serve_websocket,
+    serve_websocket_loop,
 )
 from underhfs.tensor import DType, tensor
 
@@ -158,6 +162,29 @@ def test_file_stream_reads_frames(tmp_path=None):
         os.unlink(path)
 
 
+def test_websocket_server_loop_predicts_json_frame():
+    server = serve_websocket_loop(lambda payload: payload["value"], ServeConfig(port=0)).start()
+    try:
+        with socket.create_connection((server.host, server.port), timeout=2) as sock:
+            key = base64.b64encode(os.urandom(16)).decode("ascii")
+            sock.sendall(
+                (
+                    "GET / HTTP/1.1\r\n"
+                    f"Host: {server.host}:{server.port}\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    f"Sec-WebSocket-Key: {key}\r\n"
+                    "Sec-WebSocket-Version: 13\r\n\r\n"
+                ).encode("ascii")
+            )
+            response = sock.recv(4096).decode("ascii", errors="ignore")
+            assert "101 Switching Protocols" in response
+            sock.sendall(_masked_ws_text('{"value":"ok"}'))
+            assert json.loads(_recv_unmasked_ws_text(sock)) == {"result": "ok"}
+    finally:
+        server.close()
+
+
 def test_tensor_to_cpu_dtype_and_cuda_error():
     x = tensor([1.0, 2.0]).to(dtype=DType.FP16)
     assert x.dtype is DType.FP16
@@ -171,3 +198,20 @@ def test_tensor_to_cpu_dtype_and_cuda_error():
             assert "native core is unavailable" in str(exc) or "built without CUDA support" in str(exc)
         else:
             raise AssertionError("cuda() should fail while CUDA backend is unavailable")
+
+
+def _masked_ws_text(text: str) -> bytes:
+    payload = text.encode("utf-8")
+    mask = b"\x01\x02\x03\x04"
+    masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+    return bytes([0x81, 0x80 | len(payload)]) + mask + masked
+
+
+def _recv_unmasked_ws_text(sock: socket.socket) -> str:
+    header = sock.recv(2)
+    length = header[1] & 0x7F
+    if length == 126:
+        length = int.from_bytes(sock.recv(2), "big")
+    elif length == 127:
+        length = int.from_bytes(sock.recv(8), "big")
+    return sock.recv(length).decode("utf-8")

@@ -16,6 +16,19 @@ CUDA editable build:
 scripts\build_cuda_editable.bat
 ```
 
+CPU and CUDA wheel builds can be run through the checked-in helper:
+
+```powershell
+scripts\build_wheels.bat
+```
+
+The local release gate runs compileall, CUDA editable build, the underHFS test
+suite, doctor, bench, and wheel build:
+
+```powershell
+scripts\release_check.bat
+```
+
 ## Wheel Matrix
 
 | Wheel | Python | Platform | Native | CUDA |
@@ -30,5 +43,8 @@ scripts\build_cuda_editable.bat
 - `python -m underhfs.cli test`
 - `python -m underhfs.cli doctor`
 - `python -m underhfs.cli bench --iterations 20 --warmup 3`
+- `scripts\build_cuda_editable.bat`
+- `scripts\build_wheels.bat`
 - Native CUDA probe must report allocator and stream stats on CUDA wheels.
-
+- Native CUDA probe should report fused AdamW and attention kernel availability
+  for CUDA wheels.
