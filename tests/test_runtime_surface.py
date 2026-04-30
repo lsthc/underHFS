@@ -2,12 +2,12 @@ import json
 from urllib.request import Request, urlopen
 
 from underhfs.compile import CompilePolicy, FusionKind, compile, explain
-from underhfs.cuda import MemoryPolicy, MemoryTier, RuntimePolicy
+from underhfs.cuda import MemoryPolicy, MemoryTier, RuntimePolicy, capability_matrix, require_kernel, supports_kernel
 from underhfs.data import DataLoader, TensorDataset
-from underhfs.distributed import DistributedDataParallel
+from underhfs.distributed import DistributedDataParallel, DistributedPolicy, process_group
 from underhfs.native import status
 from underhfs.nn import Linear
-from underhfs.serve import ServeConfig, serve, serve_http
+from underhfs.serve import ServeConfig, ServingProtocol, protocol_capabilities, require_protocol, serve, serve_http, serve_protocol
 from underhfs.tensor import DType, tensor
 
 
@@ -15,6 +15,14 @@ def test_policy_surfaces():
     policy = RuntimePolicy(memory=MemoryPolicy(tiers=(MemoryTier.VRAM, MemoryTier.RAM, MemoryTier.NVME)))
     assert policy.memory.allow_offload
     assert policy.memory.tiers[-1] is MemoryTier.NVME
+    assert supports_kernel("add", device="cpu", dtype=DType.FP32)
+    assert any(item.op == "matmul" for item in capability_matrix())
+    try:
+        require_kernel("matmul", device="cuda", dtype=DType.INT4)
+    except RuntimeError as exc:
+        assert "does not have" in str(exc)
+    else:
+        raise AssertionError("unsupported CUDA int4 matmul should fail explicitly")
 
 
 def test_compile_decorator_attaches_policy():
@@ -71,8 +79,21 @@ def test_data_ddp_and_python_server_surfaces():
     assert list(loader) == [[1, 2], [3]]
     ddp = DistributedDataParallel(Linear(1, 1))
     assert ddp.policy.world_size == 1
+    group = process_group(DistributedPolicy())
+    assert group.all_reduce_sum(3) == 3
+    with ddp.no_sync():
+        assert ddp.group.synchronized is False
+    assert ddp.group.synchronized is True
     server = serve(lambda payload: {"echo": payload})
     assert server.predict("ok") == {"echo": "ok"}
+    assert serve_protocol(lambda payload: payload, ServingProtocol.PYTHON).predict("ok") == "ok"
+    assert any(capability.protocol is ServingProtocol.HTTP and capability.available for capability in protocol_capabilities())
+    try:
+        require_protocol(ServingProtocol.GRPC)
+    except RuntimeError as exc:
+        assert "grpc serving is unavailable" in str(exc)
+    else:
+        raise AssertionError("gRPC serving should fail explicitly until the native path lands")
 
 
 def test_json_http_server_predict_surface():

@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from underhfs import __version__
-from underhfs.benchmarks import run_microbenchmarks
+from underhfs.benchmarks import run_memory_benchmark, run_microbenchmarks
 from underhfs.cuda import allocator_stats, device_count, devices, is_available, memory_budgets, stream_stats
 from underhfs.datasets import inspect_text_dataset, write_sample_text_dataset
 from underhfs.diagnostics import doctor
@@ -53,6 +53,7 @@ def _cmd_bench(args: argparse.Namespace) -> int:
         "native_reason": native.reason,
         "cuda_runtime": cuda_runtime,
         "results": [result.to_dict() for result in results],
+        "memory": run_memory_benchmark().to_dict(),
     }
     print(json.dumps(payload, indent=2))
     return 0

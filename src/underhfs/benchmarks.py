@@ -6,7 +6,9 @@ from time import perf_counter
 from typing import Callable
 
 from underhfs import tensor
+from underhfs.cuda import MemoryPolicy, MemoryTier
 from underhfs.native import status as native_status
+from underhfs.runtime import MemoryPlanner
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,24 @@ class BenchmarkResult:
         }
 
 
+@dataclass(frozen=True)
+class MemoryBenchmarkResult:
+    requested_bytes: int
+    placements: dict[str, int]
+    offload_events: int
+    oom_avoided: bool
+    bottlenecks: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, int | bool | dict[str, int] | list[str]]:
+        return {
+            "requested_bytes": self.requested_bytes,
+            "placements": self.placements,
+            "offload_events": self.offload_events,
+            "oom_avoided": self.oom_avoided,
+            "bottlenecks": list(self.bottlenecks),
+        }
+
+
 def run_microbenchmarks(
     *,
     size: int = 32,
@@ -56,6 +76,41 @@ def run_microbenchmarks(
         results.append(_bench("add", "cuda", iterations, warmup, lambda: _cuda_add(size)))
         results.append(_bench("matmul", "cuda", iterations, warmup, lambda: _cuda_matmul(size)))
     return results
+
+
+def run_memory_benchmark(
+    *,
+    tensor_bytes: tuple[int, ...] = (64, 128, 256),
+    policy: MemoryPolicy | None = None,
+    budgets: dict[MemoryTier, int] | None = None,
+) -> MemoryBenchmarkResult:
+    actual_policy = policy or MemoryPolicy(tiers=(MemoryTier.VRAM, MemoryTier.RAM, MemoryTier.NVME))
+    actual_budgets = budgets or {
+        MemoryTier.VRAM: 128,
+        MemoryTier.RAM: 256,
+        MemoryTier.NVME: 512,
+    }
+    planner = MemoryPlanner(actual_policy, actual_budgets)
+    placements = {tier.value: 0 for tier in actual_policy.tiers}
+    offload_events = 0
+    for size in tensor_bytes:
+        placement = planner.place_bytes(size)
+        placements[placement.tier.value] += placement.bytes
+        if placement.reason == "oversubscribed-offload" or placement.tier is not actual_policy.tiers[0]:
+            offload_events += 1
+    snapshot = planner.snapshot()
+    bottlenecks = tuple(
+        tier
+        for tier, state in snapshot.items()
+        if state["capacity_bytes"] > 0 and state["used_bytes"] > state["capacity_bytes"]
+    )
+    return MemoryBenchmarkResult(
+        requested_bytes=sum(tensor_bytes),
+        placements=placements,
+        offload_events=offload_events,
+        oom_avoided=offload_events > 0 and actual_policy.allow_offload,
+        bottlenecks=bottlenecks,
+    )
 
 
 def _bench(

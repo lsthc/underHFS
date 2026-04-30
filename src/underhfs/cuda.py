@@ -6,6 +6,8 @@ from enum import Enum
 from shutil import which
 from subprocess import run
 
+from underhfs.tensor import DType
+
 
 class MemoryTier(str, Enum):
     VRAM = "vram"
@@ -37,6 +39,24 @@ class RuntimePolicy:
     memory: MemoryPolicy = field(default_factory=MemoryPolicy)
     precision: PrecisionPolicy = field(default_factory=PrecisionPolicy)
     stream_aware: bool = True
+
+
+@dataclass(frozen=True)
+class KernelCapability:
+    op: str
+    device: str
+    dtypes: tuple[DType, ...]
+    forward: str
+    backward: str
+
+    def to_dict(self) -> dict[str, str | list[str]]:
+        return {
+            "op": self.op,
+            "device": self.device,
+            "dtypes": [dtype.value for dtype in self.dtypes],
+            "forward": self.forward,
+            "backward": self.backward,
+        }
 
 
 @dataclass(frozen=True)
@@ -104,6 +124,89 @@ def require_cuda_toolkit() -> None:
         raise RuntimeError(
             "CUDA Toolkit nvcc was not found on PATH. Install CUDA Toolkit 13.x and open a developer shell."
         )
+
+
+def capability_matrix() -> list[KernelCapability]:
+    """Return the runtime contract underHFS currently exposes for CUDA work.
+
+    This is intentionally conservative: unsupported dtype/op combinations are
+    reported as missing instead of silently pretending a slow fallback exists.
+    """
+
+    from underhfs.native import status
+
+    native = status()
+    cpu_dtypes = (
+        DType.FP32,
+        DType.FP16,
+        DType.BF16,
+        DType.FP8_E4M3,
+        DType.FP8_E5M2,
+        DType.INT8,
+        DType.INT4,
+    )
+    capabilities = [
+        KernelCapability("add", "cpu", cpu_dtypes, "python/native-fp32", "python-autograd"),
+        KernelCapability("mul", "cpu", cpu_dtypes, "python/native-fp32", "python-autograd"),
+        KernelCapability("matmul", "cpu", (DType.FP32,), "python/native-fp32", "python-autograd"),
+        KernelCapability("sum", "cpu", cpu_dtypes, "python/native-fp32", "python-autograd"),
+    ]
+    if native.cuda_enabled:
+        capabilities.extend(
+            [
+                KernelCapability(
+                    "add",
+                    "cuda",
+                    (DType.FP32, DType.FP16, DType.BF16),
+                    "native-cuda",
+                    "python-autograd-preserves-cuda",
+                ),
+                KernelCapability(
+                    "mul",
+                    "cuda",
+                    (DType.FP32, DType.FP16, DType.BF16),
+                    "native-cuda",
+                    "python-autograd-preserves-cuda",
+                ),
+                KernelCapability(
+                    "matmul",
+                    "cuda",
+                    (DType.FP32,),
+                    "native-cuda-cublas",
+                    "python-autograd-preserves-cuda",
+                ),
+                KernelCapability(
+                    "sum",
+                    "cuda",
+                    (DType.FP32,),
+                    "native-cuda",
+                    "python-autograd-preserves-cuda",
+                ),
+            ]
+        )
+    return capabilities
+
+
+def supports_kernel(op: str, *, device: str = "cpu", dtype: DType | str = DType.FP32) -> bool:
+    actual_dtype = DType(dtype)
+    return any(
+        capability.op == op and capability.device == device and actual_dtype in capability.dtypes
+        for capability in capability_matrix()
+    )
+
+
+def require_kernel(op: str, *, device: str = "cpu", dtype: DType | str = DType.FP32) -> None:
+    if supports_kernel(op, device=device, dtype=dtype):
+        return
+    supported = [
+        capability.to_dict()
+        for capability in capability_matrix()
+        if capability.op == op and capability.device == device
+    ]
+    raise RuntimeError(
+        f"underHFS does not have a {device} {DType(dtype).value} kernel for {op}. "
+        f"Supported variants: {supported or 'none'}"
+    )
 
 
 def allocator_stats() -> dict[str, int]:

@@ -84,6 +84,17 @@ external test and benchmark oracles.
 - CUDA kernels, host/device transfers, reduction copies, and cuBLAS matmul now
   run through an underHFS-owned non-blocking stream with `synchronize()` and
   stream stats exposed through `underhfs.cuda`.
+- CUDA/runtime capability reporting now lists supported op/dtype/device
+  combinations and raises explicit errors for unsupported kernels instead of
+  hiding missing fp8/int8/int4 or native-backward coverage.
+- Memory benchmarks now include a tier-pressure report showing placement,
+  offload events, OOM avoidance, and bottleneck tiers.
+- Distributed execution has a deterministic world-size-1 process group with
+  barrier, broadcast, all-reduce, DDP state/parameter passthrough, and `no_sync`
+  semantics while multi-process NCCL remains reserved.
+- Serving exposes protocol capabilities and routes both `/predict` and
+  `/v1/predict` for JSON HTTP while reserved WebSocket/gRPC/C++ paths fail with
+  clear production-readiness errors.
 
 ## Product Surface
 

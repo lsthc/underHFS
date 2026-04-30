@@ -53,7 +53,11 @@ class MemoryPlanner:
         return int(tensor.numel() * _DTYPE_BYTES[tensor.dtype])
 
     def place_tensor(self, tensor: Tensor) -> Placement:
-        size = self.tensor_size_bytes(tensor)
+        return self.place_bytes(self.tensor_size_bytes(tensor))
+
+    def place_bytes(self, size: int) -> Placement:
+        if size < 0:
+            raise ValueError("size must be non-negative")
         for tier in self.policy.tiers:
             budget = self.budgets[tier]
             if budget.reserve(size):

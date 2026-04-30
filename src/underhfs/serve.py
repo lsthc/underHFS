@@ -25,6 +25,22 @@ class StreamSourceKind(str, Enum):
     NETWORK = "network"
 
 
+@dataclass(frozen=True)
+class ProtocolCapability:
+    protocol: ServingProtocol
+    available: bool
+    transport: str
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, str | bool]:
+        return {
+            "protocol": self.protocol.value,
+            "available": self.available,
+            "transport": self.transport,
+            "reason": self.reason,
+        }
+
+
 @dataclass
 class ServeConfig:
     host: str = "127.0.0.1"
@@ -78,7 +94,7 @@ class JsonHTTPServer:
                 self._send_json({"status": "ok"})
 
             def do_POST(self) -> None:
-                if self.path != "/predict":
+                if self.path not in {"/predict", "/v1/predict"}:
                     self._send_json({"error": "not found"}, status=404)
                     return
                 try:
@@ -108,6 +124,55 @@ def serve(handler: Callable[[Any], Any], config: ServeConfig | None = None) -> P
 
 def serve_http(handler: Callable[[Any], Any], config: ServeConfig | None = None) -> JsonHTTPServer:
     return JsonHTTPServer(handler, config)
+
+
+def protocol_capabilities() -> list[ProtocolCapability]:
+    return [
+        ProtocolCapability(ServingProtocol.PYTHON, True, "in-process callable"),
+        ProtocolCapability(ServingProtocol.HTTP, True, "standard-library JSON HTTP"),
+        ProtocolCapability(
+            ServingProtocol.WEBSOCKET,
+            False,
+            "reserved",
+            "requires a dedicated websocket runtime before production use",
+        ),
+        ProtocolCapability(
+            ServingProtocol.GRPC,
+            False,
+            "reserved",
+            "requires grpcio/protobuf code generation or a native serving bridge",
+        ),
+        ProtocolCapability(
+            ServingProtocol.CPP,
+            False,
+            "reserved",
+            "requires the native C++ serving executable path",
+        ),
+    ]
+
+
+def require_protocol(protocol: ServingProtocol | str) -> None:
+    actual = ServingProtocol(protocol)
+    for capability in protocol_capabilities():
+        if capability.protocol is actual:
+            if capability.available:
+                return
+            raise RuntimeError(f"{actual.value} serving is unavailable: {capability.reason}")
+    raise RuntimeError(f"unknown serving protocol: {actual.value}")
+
+
+def serve_protocol(
+    handler: Callable[[Any], Any],
+    protocol: ServingProtocol | str,
+    config: ServeConfig | None = None,
+) -> PythonServer | JsonHTTPServer:
+    actual = ServingProtocol(protocol)
+    require_protocol(actual)
+    if actual is ServingProtocol.PYTHON:
+        return serve(handler, config)
+    if actual is ServingProtocol.HTTP:
+        return serve_http(handler, config)
+    raise RuntimeError(f"{actual.value} serving is not implemented")
 
 
 def open_stream(source: str, kind: StreamSourceKind = StreamSourceKind.FILE):
