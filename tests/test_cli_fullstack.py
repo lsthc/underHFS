@@ -23,6 +23,7 @@ def test_checkpoint_dataset_and_serve_cli(tmp_path=None):
     assert dataset.exists()
     assert main(["bench", "--size", "2", "--iterations", "1", "--warmup", "0", "--no-cuda"]) == 0
     assert main(["serve", "--smoke", "--prompt", "hi"]) == 0
+    assert main(["serve", "--http-smoke"]) == 0
     assert main(["export", str(manifest)]) == 0
     exported = load_manifest(manifest)
     assert exported["model"] == "TransformerLM"

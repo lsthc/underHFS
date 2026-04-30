@@ -1,10 +1,13 @@
+import json
+from urllib.request import Request, urlopen
+
 from underhfs.compile import CompilePolicy, compile
 from underhfs.cuda import MemoryPolicy, MemoryTier, RuntimePolicy
 from underhfs.data import DataLoader, TensorDataset
 from underhfs.distributed import DistributedDataParallel
 from underhfs.native import status
 from underhfs.nn import Linear
-from underhfs.serve import serve
+from underhfs.serve import ServeConfig, serve, serve_http
 from underhfs.tensor import DType, tensor
 
 
@@ -29,6 +32,23 @@ def test_data_ddp_and_python_server_surfaces():
     assert ddp.policy.world_size == 1
     server = serve(lambda payload: {"echo": payload})
     assert server.predict("ok") == {"echo": "ok"}
+
+
+def test_json_http_server_predict_surface():
+    server = serve_http(lambda payload: {"echo": payload["value"]}, ServeConfig(port=0)).start()
+    try:
+        with urlopen(f"{server.url}/health", timeout=2) as response:
+            assert json.loads(response.read().decode("utf-8")) == {"status": "ok"}
+        request = Request(
+            f"{server.url}/predict",
+            data=json.dumps({"value": "ok"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=2) as response:
+            assert json.loads(response.read().decode("utf-8")) == {"result": {"echo": "ok"}}
+    finally:
+        server.close()
 
 
 def test_tensor_to_cpu_dtype_and_cuda_error():

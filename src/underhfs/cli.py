@@ -20,7 +20,7 @@ from underhfs.serialization import (
     save_binary_state_dict,
     save_checkpoint,
 )
-from underhfs.serve import serve
+from underhfs.serve import ServeConfig, serve, serve_http
 from underhfs.tensor import tensor
 from underhfs.text import ByteTokenizer
 from underhfs.testing import run_test_functions
@@ -189,12 +189,23 @@ def _cmd_dataset(args: argparse.Namespace) -> int:
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
-    if not args.smoke:
-        print("underhfs serve currently supports --smoke for local PythonServer verification")
+    if not args.smoke and not args.http_smoke:
+        print("underhfs serve currently supports --smoke and --http-smoke verification paths")
         return 2
     tokenizer = ByteTokenizer()
     model = TransformerLM(vocab_size=256, max_seq_len=8, features=4, hidden_features=8, layers=1)
     server = serve(lambda payload: tokenizer.decode(model.generate(tokenizer.encode(payload["prompt"]), args.max_new_tokens)))
+    if args.http_smoke:
+        http = serve_http(
+            lambda payload: {"text": server.predict(payload)},
+            ServeConfig(host=args.host, port=args.port),
+        )
+        try:
+            http.start()
+            print(json.dumps({"url": http.url, "health": "/health", "predict": "/predict"}, indent=2))
+        finally:
+            http.close()
+        return 0
     print(json.dumps({"prompt": args.prompt, "response": server.predict({"prompt": args.prompt})}, indent=2))
     return 0
 
@@ -272,6 +283,9 @@ def main(argv: list[str] | None = None) -> int:
 
     serve_cmd = sub.add_parser("serve")
     serve_cmd.add_argument("--smoke", action="store_true")
+    serve_cmd.add_argument("--http-smoke", action="store_true")
+    serve_cmd.add_argument("--host", default="127.0.0.1")
+    serve_cmd.add_argument("--port", type=int, default=0)
     serve_cmd.add_argument("--prompt", default="hi")
     serve_cmd.add_argument("--max-new-tokens", type=int, default=2)
     serve_cmd.set_defaults(func=_cmd_serve)

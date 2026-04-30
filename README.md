@@ -59,6 +59,8 @@ external test and benchmark oracles.
   microbenchmarks now report p50/p95 latency alongside throughput.
 - Tensor `view`, `flatten`, and basic slicing now expose stride/offset semantics
   with shared in-place version counters and gradient scatter for slices.
+- Serving includes a standard-library JSON HTTP server with `/health` and
+  `/predict` endpoints in addition to the local Python server.
 - CMake + pybind11 native extension scaffold and CUDA kernel scaffold gated
   behind `UNDERHFS_WITH_CUDA`.
 - Native C++ `TensorCore` contract for shape validation, strides, add, mul,
