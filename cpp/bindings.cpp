@@ -33,5 +33,11 @@ PYBIND11_MODULE(_core, m) {
   m.def("contiguous_strides", &underhfs::contiguous_strides);
 #ifdef UNDERHFS_WITH_CUDA
   m.def("cuda_add_f32", &underhfs::cuda_add_f32_host);
+  py::class_<underhfs::CudaTensorF32>(m, "CudaTensorF32")
+      .def(py::init<const std::vector<float>&, std::vector<std::size_t>>())
+      .def_property_readonly("shape", &underhfs::CudaTensorF32::shape)
+      .def("numel", &underhfs::CudaTensorF32::numel)
+      .def("to_host", &underhfs::CudaTensorF32::to_host)
+      .def("add", &underhfs::CudaTensorF32::add);
 #endif
 }

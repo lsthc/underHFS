@@ -54,6 +54,10 @@ external test and benchmark oracles.
 - Python Tensor CPU fast paths call native `_core` for dense fp32 add, mul,
   matmul, and sum when available.
 - CUDA-enabled native builds expose and probe a real GPU `cuda_add_f32` kernel.
+- CUDA `CudaTensorF32` provides the first persistent GPU tensor storage with
+  device allocation, host transfer, and add.
+- Python Tensor `.cuda()` now creates native CUDA storage for dense fp32 tensors,
+  and CUDA Tensor add uses the native GPU storage path.
 
 ## Product Surface
 

@@ -47,4 +47,8 @@ def probe() -> dict[str, Any]:
     }
     if cuda_enabled and hasattr(core, "cuda_add_f32"):
         result["cuda_add_f32"] = list(core.cuda_add_f32([1.0, 2.0], [3.0, 4.0]))
+    if cuda_enabled and hasattr(core, "CudaTensorF32"):
+        left_gpu = core.CudaTensorF32([1.0, 2.0], [2])
+        right_gpu = core.CudaTensorF32([3.0, 4.0], [2])
+        result["cuda_tensor_add_f32"] = list(left_gpu.add(right_gpu).to_host())
     return result

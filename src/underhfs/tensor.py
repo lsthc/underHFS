@@ -169,6 +169,7 @@ class Tensor:
         self._backward: Callable[[], None] = lambda: None
         self._version = 0
         self.backend = "python"
+        self._native_cuda = None
 
     @property
     def ndim(self) -> int:
@@ -225,7 +226,7 @@ class Tensor:
                     "cannot move tensor to CUDA because underHFS was built without CUDA support. "
                     "Rebuild with UNDERHFS_WITH_CUDA=ON after installing CUDA Toolkit."
                 )
-        return Tensor(
+        out = Tensor(
             list(self._storage),
             shape=self.shape,
             requires_grad=self.requires_grad,
@@ -233,6 +234,9 @@ class Tensor:
             device=target_device,
             layout=self.layout if layout is None else Layout(layout),
         )
+        if target_device.kind == "cuda":
+            out._attach_cuda_storage()
+        return out
 
     def cpu(self) -> Tensor:
         return self.to("cpu")
@@ -290,6 +294,24 @@ class Tensor:
     def _native_cpu_eligible(self) -> bool:
         return self.device.kind == "cpu" and self.layout is Layout.DENSE and self.dtype is DType.FP32
 
+    def _native_cuda_eligible(self) -> bool:
+        return self.device.kind == "cuda" and self.layout is Layout.DENSE and self.dtype is DType.FP32
+
+    def _attach_cuda_storage(self) -> None:
+        if not self._native_cuda_eligible():
+            return
+        from underhfs.native import require_native
+
+        core = require_native()
+        if not bool(getattr(core, "cuda_enabled", False)) or not hasattr(core, "CudaTensorF32"):
+            raise RuntimeError("CUDA Tensor storage is unavailable in this underHFS native build")
+        self._native_cuda = core.CudaTensorF32([float(value) for value in self._storage], list(self.shape))
+        self.backend = "native_cuda"
+
+    def _sync_from_cuda(self) -> None:
+        if self._native_cuda is not None:
+            self._storage = [float(value) for value in self._native_cuda.to_host()]
+
     def _to_native_core(self):
         from underhfs.native import require_native
 
@@ -318,6 +340,26 @@ class Tensor:
     def _try_native_binary(self, rhs: Tensor, op: str) -> Tensor | None:
         if op not in {"add", "mul"}:
             return None
+        if op == "add" and self.shape == rhs.shape and self._native_cuda_eligible() and rhs._native_cuda_eligible():
+            try:
+                if self._native_cuda is None:
+                    self._attach_cuda_storage()
+                if rhs._native_cuda is None:
+                    rhs._attach_cuda_storage()
+                out = Tensor(
+                    [0.0] * self.numel(),
+                    shape=self.shape,
+                    requires_grad=self.requires_grad or rhs.requires_grad,
+                    device=self.device,
+                    _children=(self, rhs),
+                    _op=op,
+                )
+                out._native_cuda = self._native_cuda.add(rhs._native_cuda)
+                out.backend = "native_cuda"
+                out._sync_from_cuda()
+                return out
+            except Exception:
+                return None
         if self.shape != rhs.shape or not self._native_cpu_eligible() or not rhs._native_cpu_eligible():
             return None
         try:
@@ -499,6 +541,8 @@ class Tensor:
         self._storage = result._storage
         self.shape = result.shape
         self.strides = result.strides
+        self._native_cuda = result._native_cuda
+        self.backend = result.backend
         self._version += 1
         return self
 
