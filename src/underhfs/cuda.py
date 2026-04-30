@@ -124,6 +124,24 @@ def empty_cache() -> None:
     core.cuda_empty_cache()
 
 
+def stream_stats() -> dict[str, int]:
+    from underhfs.native import require_native
+
+    core = require_native()
+    if not bool(getattr(core, "cuda_enabled", False)) or not hasattr(core, "cuda_stream_stats"):
+        raise RuntimeError("CUDA stream stats are unavailable in this underHFS native build")
+    return {str(key): int(value) for key, value in core.cuda_stream_stats().items()}
+
+
+def synchronize() -> None:
+    from underhfs.native import require_native
+
+    core = require_native()
+    if not bool(getattr(core, "cuda_enabled", False)) or not hasattr(core, "cuda_synchronize"):
+        raise RuntimeError("CUDA synchronize is unavailable in this underHFS native build")
+    core.cuda_synchronize()
+
+
 def _parse_nvidia_smi_devices(output: str) -> list[CudaDeviceInfo]:
     devices_out: list[CudaDeviceInfo] = []
     for line in output.splitlines():

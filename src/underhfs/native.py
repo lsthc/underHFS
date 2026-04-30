@@ -88,4 +88,8 @@ def probe() -> dict[str, Any]:
             result["cuda_allocator"] = {
                 str(key): int(value) for key, value in core.cuda_allocator_stats().items()
             }
+        if hasattr(core, "cuda_stream_stats"):
+            result["cuda_stream"] = {
+                str(key): int(value) for key, value in core.cuda_stream_stats().items()
+            }
     return result

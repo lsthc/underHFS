@@ -92,6 +92,59 @@ cublasHandle_t cublas_handle() {
   return handle.get();
 }
 
+class CudaRuntime {
+ public:
+  CudaRuntime() { check_cuda(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking), "cudaStreamCreate"); }
+  ~CudaRuntime() {
+    if (stream_ != nullptr) {
+      cudaStreamDestroy(stream_);
+    }
+  }
+
+  CudaRuntime(const CudaRuntime&) = delete;
+  CudaRuntime& operator=(const CudaRuntime&) = delete;
+
+  cudaStream_t stream() const { return stream_; }
+
+  void record_launch() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++launches_;
+  }
+
+  void record_copy() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++copies_;
+  }
+
+  void synchronize(const char* context) {
+    check_cuda(cudaStreamSynchronize(stream_), context);
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++synchronizations_;
+  }
+
+  std::unordered_map<std::string, std::size_t> stats() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return {
+        {"non_blocking_streams", 1},
+        {"launches", launches_},
+        {"copies", copies_},
+        {"synchronizations", synchronizations_},
+    };
+  }
+
+ private:
+  cudaStream_t stream_ = nullptr;
+  mutable std::mutex mutex_;
+  std::size_t launches_ = 0;
+  std::size_t copies_ = 0;
+  std::size_t synchronizations_ = 0;
+};
+
+CudaRuntime& cuda_runtime() {
+  static CudaRuntime runtime;
+  return runtime;
+}
+
 class CudaCachingAllocator {
  public:
   float* allocate(std::size_t bytes, const char* context) {
@@ -171,8 +224,11 @@ CudaTensorF32::CudaTensorF32(const std::vector<float>& host, std::vector<std::si
   }
   device_ = cuda_allocator().allocate(numel_ * sizeof(float), "CudaTensorF32 cudaMalloc");
   try {
-    check_cuda(cudaMemcpy(device_, host.data(), numel_ * sizeof(float), cudaMemcpyHostToDevice),
+    check_cuda(cudaMemcpyAsync(device_, host.data(), numel_ * sizeof(float), cudaMemcpyHostToDevice,
+                               cuda_runtime().stream()),
                "CudaTensorF32 host-to-device copy");
+    cuda_runtime().record_copy();
+    cuda_runtime().synchronize("CudaTensorF32 host-to-device sync");
   } catch (...) {
     cuda_allocator().release(device_, numel_ * sizeof(float));
     device_ = nullptr;
@@ -218,8 +274,11 @@ std::size_t CudaTensorF32::numel() const { return numel_; }
 
 std::vector<float> CudaTensorF32::to_host() const {
   std::vector<float> host(numel_, 0.0f);
-  check_cuda(cudaMemcpy(host.data(), device_, numel_ * sizeof(float), cudaMemcpyDeviceToHost),
+  check_cuda(cudaMemcpyAsync(host.data(), device_, numel_ * sizeof(float), cudaMemcpyDeviceToHost,
+                             cuda_runtime().stream()),
              "CudaTensorF32 device-to-host copy");
+  cuda_runtime().record_copy();
+  cuda_runtime().synchronize("CudaTensorF32 device-to-host sync");
   return host;
 }
 
@@ -232,10 +291,11 @@ CudaTensorF32 CudaTensorF32::add(const CudaTensorF32& other) const {
   const int n = static_cast<int>(numel_);
   const int block = 256;
   const int grid = (n + block - 1) / block;
-  underhfs_add_f32<<<grid, block>>>(device_, other.device_, out, n);
+  underhfs_add_f32<<<grid, block, 0, cuda_runtime().stream()>>>(device_, other.device_, out, n);
   try {
+    cuda_runtime().record_launch();
     check_cuda(cudaGetLastError(), "CudaTensorF32 add launch");
-    check_cuda(cudaDeviceSynchronize(), "CudaTensorF32 add sync");
+    cuda_runtime().synchronize("CudaTensorF32 add sync");
   } catch (...) {
     cuda_allocator().release(out, numel_ * sizeof(float));
     throw;
@@ -252,10 +312,11 @@ CudaTensorF32 CudaTensorF32::mul(const CudaTensorF32& other) const {
   const int n = static_cast<int>(numel_);
   const int block = 256;
   const int grid = (n + block - 1) / block;
-  underhfs_mul_f32<<<grid, block>>>(device_, other.device_, out, n);
+  underhfs_mul_f32<<<grid, block, 0, cuda_runtime().stream()>>>(device_, other.device_, out, n);
   try {
+    cuda_runtime().record_launch();
     check_cuda(cudaGetLastError(), "CudaTensorF32 mul launch");
-    check_cuda(cudaDeviceSynchronize(), "CudaTensorF32 mul sync");
+    cuda_runtime().synchronize("CudaTensorF32 mul sync");
   } catch (...) {
     cuda_allocator().release(out, numel_ * sizeof(float));
     throw;
@@ -281,11 +342,14 @@ CudaTensorF32 CudaTensorF32::matmul(const CudaTensorF32& other) const {
   try {
     const float alpha = 1.0f;
     const float beta = 0.0f;
+    check_cublas(cublasSetStream(cublas_handle(), cuda_runtime().stream()),
+                 "CudaTensorF32 matmul cublasSetStream");
     check_cublas(
         cublasSgemm(cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N, n, m, k, &alpha, other.device_, n,
                     device_, k, &beta, out, n),
         "CudaTensorF32 matmul cublasSgemm");
-    check_cuda(cudaDeviceSynchronize(), "CudaTensorF32 matmul sync");
+    cuda_runtime().record_launch();
+    cuda_runtime().synchronize("CudaTensorF32 matmul sync");
   } catch (...) {
     cuda_allocator().release(out, out_numel * sizeof(float));
     throw;
@@ -308,16 +372,20 @@ CudaTensorF32 CudaTensorF32::sum() const {
       const auto partial_bytes = static_cast<std::size_t>(grid) * sizeof(float);
       partials = cuda_allocator().allocate(partial_bytes, "CudaTensorF32 sum partial cudaMalloc");
       temporaries.emplace_back(partials, partial_bytes);
-      underhfs_sum_blocks_f32<<<grid, block, block * sizeof(float)>>>(current, partials, current_n);
+      underhfs_sum_blocks_f32<<<grid, block, block * sizeof(float), cuda_runtime().stream()>>>(
+          current, partials, current_n);
+      cuda_runtime().record_launch();
       check_cuda(cudaGetLastError(), "CudaTensorF32 sum launch");
       current = partials;
       current_n = grid;
     }
     float* out = nullptr;
     out = cuda_allocator().allocate(sizeof(float), "CudaTensorF32 sum cudaMalloc");
-    check_cuda(cudaMemcpy(out, current, sizeof(float), cudaMemcpyDeviceToDevice),
+    check_cuda(cudaMemcpyAsync(out, current, sizeof(float), cudaMemcpyDeviceToDevice,
+                               cuda_runtime().stream()),
                "CudaTensorF32 sum device copy");
-    check_cuda(cudaDeviceSynchronize(), "CudaTensorF32 sum sync");
+    cuda_runtime().record_copy();
+    cuda_runtime().synchronize("CudaTensorF32 sum sync");
     for (auto [temporary, bytes] : temporaries) {
       cuda_allocator().release(temporary, bytes);
     }
@@ -347,17 +415,24 @@ std::vector<float> cuda_add_f32_host(const std::vector<float>& left,
   check_cuda(cudaMalloc(&d_out, bytes), "cudaMalloc(out)");
 
   try {
-    check_cuda(cudaMemcpy(d_left, left.data(), bytes, cudaMemcpyHostToDevice),
+    check_cuda(cudaMemcpyAsync(d_left, left.data(), bytes, cudaMemcpyHostToDevice,
+                               cuda_runtime().stream()),
                "cudaMemcpy(left)");
-    check_cuda(cudaMemcpy(d_right, right.data(), bytes, cudaMemcpyHostToDevice),
+    cuda_runtime().record_copy();
+    check_cuda(cudaMemcpyAsync(d_right, right.data(), bytes, cudaMemcpyHostToDevice,
+                               cuda_runtime().stream()),
                "cudaMemcpy(right)");
+    cuda_runtime().record_copy();
     const int block = 256;
     const int grid = (n + block - 1) / block;
-    underhfs_add_f32<<<grid, block>>>(d_left, d_right, d_out, n);
+    underhfs_add_f32<<<grid, block, 0, cuda_runtime().stream()>>>(d_left, d_right, d_out, n);
+    cuda_runtime().record_launch();
     check_cuda(cudaGetLastError(), "underhfs_add_f32 launch");
-    check_cuda(cudaDeviceSynchronize(), "underhfs_add_f32 sync");
-    check_cuda(cudaMemcpy(out.data(), d_out, bytes, cudaMemcpyDeviceToHost),
+    check_cuda(cudaMemcpyAsync(out.data(), d_out, bytes, cudaMemcpyDeviceToHost,
+                               cuda_runtime().stream()),
                "cudaMemcpy(out)");
+    cuda_runtime().record_copy();
+    cuda_runtime().synchronize("underhfs_add_f32 sync");
   } catch (...) {
     cudaFree(d_left);
     cudaFree(d_right);
@@ -376,5 +451,11 @@ std::unordered_map<std::string, std::size_t> cuda_allocator_stats() {
 }
 
 void cuda_empty_cache() { cuda_allocator().empty_cache(); }
+
+std::unordered_map<std::string, std::size_t> cuda_stream_stats() {
+  return cuda_runtime().stats();
+}
+
+void cuda_synchronize() { cuda_runtime().synchronize("cuda_synchronize"); }
 
 }  // namespace underhfs

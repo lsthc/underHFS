@@ -66,6 +66,9 @@ external test and benchmark oracles.
   underHFS row-major tensor semantics.
 - CUDA storage now uses an exact-size caching allocator with stats and
   `empty_cache()` hooks exposed through `underhfs.cuda`.
+- CUDA kernels, host/device transfers, reduction copies, and cuBLAS matmul now
+  run through an underHFS-owned non-blocking stream with `synchronize()` and
+  stream stats exposed through `underhfs.cuda`.
 
 ## Product Surface
 

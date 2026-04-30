@@ -1,4 +1,4 @@
-from underhfs.cuda import allocator_stats, empty_cache
+from underhfs.cuda import allocator_stats, empty_cache, stream_stats, synchronize
 from underhfs.native import probe, status
 from underhfs.tensor import tensor
 
@@ -20,6 +20,8 @@ def test_native_contract_probe_when_available():
         assert result["cuda_tensor_sum_f32"] == [3.0]
         assert result["cuda_tensor_matmul_f32"] == [19.0, 22.0, 43.0, 50.0]
         assert result["cuda_allocator"]["allocated_bytes"] > 0
+        assert result["cuda_stream"]["non_blocking_streams"] == 1
+        assert result["cuda_stream"]["launches"] > 0
 
 
 def test_tensor_uses_native_cpu_fast_path_when_available():
@@ -131,3 +133,18 @@ def test_cuda_allocator_stats_and_empty_cache_when_available():
     empty_cache()
     cleared = allocator_stats()
     assert cleared["cached_bytes"] == 0
+
+
+def test_cuda_stream_stats_and_synchronize_when_available():
+    state = status()
+    if not state.cuda_enabled:
+        return
+    before = stream_stats()
+    out = tensor([1.0, 2.0]).cuda() + tensor([3.0, 4.0]).cuda()
+    synchronize()
+    after = stream_stats()
+    assert out.tolist() == [4.0, 6.0]
+    assert after["non_blocking_streams"] == 1
+    assert after["launches"] > before["launches"]
+    assert after["copies"] >= before["copies"]
+    assert after["synchronizations"] > before["synchronizations"]

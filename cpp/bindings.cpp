@@ -35,6 +35,8 @@ PYBIND11_MODULE(_core, m) {
   m.def("cuda_add_f32", &underhfs::cuda_add_f32_host);
   m.def("cuda_allocator_stats", &underhfs::cuda_allocator_stats);
   m.def("cuda_empty_cache", &underhfs::cuda_empty_cache);
+  m.def("cuda_stream_stats", &underhfs::cuda_stream_stats);
+  m.def("cuda_synchronize", &underhfs::cuda_synchronize);
   py::class_<underhfs::CudaTensorF32>(m, "CudaTensorF32")
       .def(py::init<const std::vector<float>&, std::vector<std::size_t>>())
       .def_property_readonly("shape", &underhfs::CudaTensorF32::shape)

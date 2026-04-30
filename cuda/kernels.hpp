@@ -1,8 +1,8 @@
 #pragma once
 
+#include <unordered_map>
 #include <string>
 #include <vector>
-#include <unordered_map>
 
 namespace underhfs {
 
@@ -36,5 +36,7 @@ std::vector<float> cuda_add_f32_host(const std::vector<float>& left,
                                      const std::vector<float>& right);
 std::unordered_map<std::string, std::size_t> cuda_allocator_stats();
 void cuda_empty_cache();
+std::unordered_map<std::string, std::size_t> cuda_stream_stats();
+void cuda_synchronize();
 
 }  // namespace underhfs
