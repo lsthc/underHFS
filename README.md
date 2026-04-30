@@ -55,6 +55,8 @@ external test and benchmark oracles.
   fp32 tensor payloads, avoiding executable checkpoint formats.
 - Native CUDA storage now covers fp16 and bf16 elementwise add/mul paths in
   addition to fp32.
+- AdamW/FusedAdamW preserve parameter device and dtype in optimizer state, and
+  microbenchmarks now report p50/p95 latency alongside throughput.
 - CMake + pybind11 native extension scaffold and CUDA kernel scaffold gated
   behind `UNDERHFS_WITH_CUDA`.
 - Native C++ `TensorCore` contract for shape validation, strides, add, mul,
