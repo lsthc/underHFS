@@ -16,7 +16,7 @@ from underhfs.functional import cross_entropy
 from underhfs.optim import SGD
 from underhfs.tensor import tensor
 
-from live_world import LiveWorldModel, Player, render_ascii, render_viewport, tile_histogram, training_samples
+from live_world import LiveWorldModel, block_histogram, render_ascii, render_chunk, spawn_player, training_samples
 
 
 def run_smoke(*, steps: int = 18, write_artifacts: bool = False) -> dict:
@@ -34,18 +34,20 @@ def run_smoke(*, steps: int = 18, write_artifacts: bool = False) -> dict:
         losses.append(loss.item())
         loss.backward()
         opt.step()
-    viewport = render_viewport(model, prompt, Player(), radius=3)
+    chunk = render_chunk(model, prompt, spawn_player(prompt), radius=4)
     report = {
         "project": "liveSee",
-        "task": "ai_live_world_generation_and_play",
+        "task": "minecraft_like_ai_live_world_generation_and_play",
         "prompt": prompt,
-        "controls": "WASD",
+        "controls": "WASD + Q/E or arrow keys",
         "steps": steps,
         "initial_loss": losses[0],
         "final_loss": losses[-1],
-        "player": viewport["player"],
-        "ascii_view": render_ascii(viewport),
-        "tile_histogram": tile_histogram(viewport["tiles"]),
+        "mode": chunk["mode"],
+        "player": chunk["player"],
+        "ascii_view": render_ascii(chunk),
+        "block_count": len(chunk["blocks"]),
+        "block_histogram": block_histogram(chunk["blocks"]),
     }
     if write_artifacts:
         artifact_dir = Path(__file__).resolve().parent / "artifacts"

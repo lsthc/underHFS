@@ -36,9 +36,11 @@ def test_livesee_project_smoke():
     module = _load("project/liveSee/train_live_world.py")
     report = module.run_smoke(steps=2)
     assert report["project"] == "liveSee"
-    assert report["task"] == "ai_live_world_generation_and_play"
-    assert report["controls"] == "WASD"
+    assert report["task"] == "minecraft_like_ai_live_world_generation_and_play"
+    assert report["mode"] == "minecraft_like_voxel_world"
+    assert report["controls"] == "WASD + Q/E or arrow keys"
     assert "@" in report["ascii_view"]
+    assert report["block_count"] > 0
 
 
 def test_livesee_play_server_state_and_wasd_move():
@@ -46,9 +48,13 @@ def test_livesee_play_server_state_and_wasd_move():
     session = module.LiveWorldSession(steps=1)
     before = session.state()
     after = session.move("d")
-    assert before["player"] == {"x": 0, "y": 0}
-    assert after["player"] == {"x": 1, "y": 0}
-    assert len(after["tiles"]) == 11
+    turned = session.move("e")
+    assert before["mode"] == "minecraft_like_voxel_world"
+    assert before["player"]["x"] == 0.0
+    assert after["player"]["x"] == 1.0
+    assert "z" in after["player"]
+    assert turned["player"]["yaw"] > after["player"]["yaw"]
+    assert len(after["blocks"]) > 0
 
 
 def test_progamer_project_smoke():
