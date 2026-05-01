@@ -122,6 +122,41 @@ def probe() -> dict[str, Any]:
                     False,
                 )
             )
+        if bool(getattr(core, "cudnn_enabled", False)) and hasattr(core, "cudnn_conv2d_backward_input_f32"):
+            result["cudnn_conv2d_backward_input_f32"] = list(
+                core.cudnn_conv2d_backward_input_f32(
+                    [1.0],
+                    [2.0],
+                    1,
+                    1,
+                    1,
+                    1,
+                    1,
+                    1,
+                    1,
+                    1,
+                    1,
+                    0,
+                    0,
+                )
+            )
+            result["cudnn_conv2d_backward_weight_f32"] = list(
+                core.cudnn_conv2d_backward_weight_f32(
+                    [2.0],
+                    [1.0],
+                    1,
+                    1,
+                    1,
+                    1,
+                    1,
+                    1,
+                    1,
+                    1,
+                    1,
+                    0,
+                    0,
+                )
+            )
         if hasattr(core, "CudaTensorF16"):
             left_f16 = core.CudaTensorF16([1.0, 2.0], [2])
             right_f16 = core.CudaTensorF16([3.0, 4.0], [2])

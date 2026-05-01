@@ -5,6 +5,9 @@
 #ifdef UNDERHFS_WITH_CUDA
 #include "kernels.hpp"
 #endif
+#ifdef UNDERHFS_WITH_NCCL
+#include "nccl_runtime.hpp"
+#endif
 
 namespace py = pybind11;
 
@@ -23,6 +26,17 @@ PYBIND11_MODULE(_core, m) {
 #endif
 #ifdef UNDERHFS_WITH_NCCL
   m.attr("nccl_enabled") = true;
+  m.def("nccl_create_unique_id_hex", &underhfs::nccl_create_unique_id_hex);
+  py::class_<underhfs::NcclProcessGroup>(m, "NcclProcessGroup")
+      .def(py::init<int, int, const std::string&>(), py::arg("rank"), py::arg("world_size"),
+           py::arg("unique_id_hex") = "")
+      .def_property_readonly("rank", &underhfs::NcclProcessGroup::rank)
+      .def_property_readonly("world_size", &underhfs::NcclProcessGroup::world_size)
+      .def("barrier", &underhfs::NcclProcessGroup::barrier)
+      .def("all_reduce_sum", &underhfs::NcclProcessGroup::all_reduce_sum)
+      .def("broadcast", &underhfs::NcclProcessGroup::broadcast)
+      .def("reduce_scatter", &underhfs::NcclProcessGroup::reduce_scatter)
+      .def("all_gather", &underhfs::NcclProcessGroup::all_gather);
 #else
   m.attr("nccl_enabled") = false;
 #endif
@@ -47,6 +61,8 @@ PYBIND11_MODULE(_core, m) {
   m.def("cuda_attention_f32", &underhfs::cuda_attention_f32_host);
 #ifdef UNDERHFS_WITH_CUDNN
   m.def("cudnn_conv2d_forward_f32", &underhfs::cudnn_conv2d_forward_f32_host);
+  m.def("cudnn_conv2d_backward_input_f32", &underhfs::cudnn_conv2d_backward_input_f32_host);
+  m.def("cudnn_conv2d_backward_weight_f32", &underhfs::cudnn_conv2d_backward_weight_f32_host);
 #endif
   m.def("cuda_allocator_stats", &underhfs::cuda_allocator_stats);
   m.def("cuda_empty_cache", &underhfs::cuda_empty_cache);

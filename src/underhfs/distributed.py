@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
+import os
 from typing import Any, Iterator
 
 from underhfs.tensor import Tensor
@@ -63,6 +64,7 @@ class ProcessGroup:
 
     def __post_init__(self) -> None:
         if self.policy.world_size > 1:
+            _CURRENT_POLICY.policy = self.policy
             self._native = _nccl_runtime()
 
     @property
@@ -192,7 +194,11 @@ def _nccl_runtime() -> Any:
     if not bool(getattr(core, "nccl_enabled", False)):
         raise RuntimeError("multi-process collectives require UNDERHFS_WITH_NCCL=ON")
     if hasattr(core, "NcclProcessGroup"):
-        return core.NcclProcessGroup
+        policy = getattr(_CURRENT_POLICY, "policy", None)
+        if policy is None:
+            raise RuntimeError("NCCL process group policy was not initialized")
+        unique_id = os.environ.get("UNDERHFS_NCCL_UNIQUE_ID", "")
+        return _NativeNcclRuntime(core.NcclProcessGroup(policy.rank, policy.world_size, unique_id))
     return _ManifestNcclRuntime()
 
 
@@ -211,6 +217,64 @@ class _ManifestNcclRuntime:
 
     def all_gather(self, value: Any) -> list[Any]:
         return [value]
+
+
+class _NativeNcclRuntime:
+    def __init__(self, group: Any) -> None:
+        self.group = group
+
+    def barrier(self) -> None:
+        self.group.barrier()
+
+    def all_reduce_sum(self, value: Any) -> Any:
+        payload, restore = _collective_payload(value)
+        return restore(self.group.all_reduce_sum(payload))
+
+    def broadcast(self, value: Any, src: int = 0) -> Any:
+        payload, restore = _collective_payload(value)
+        return restore(self.group.broadcast(payload, int(src)))
+
+    def reduce_scatter(self, values: Any) -> Any:
+        payload, restore = _collective_payload(values)
+        return restore(self.group.reduce_scatter(payload))
+
+    def all_gather(self, value: Any) -> list[Any] | Tensor:
+        payload, restore = _collective_payload(value)
+        gathered = self.group.all_gather(payload)
+        if isinstance(value, Tensor):
+            return restore(gathered)
+        return list(gathered)
+
+
+@dataclass
+class _PolicyContext:
+    policy: DistributedPolicy | None = None
+
+
+_CURRENT_POLICY = _PolicyContext()
+
+
+def _collective_payload(value: Any):
+    if isinstance(value, Tensor):
+        shape = value.shape
+        device = value.device
+        dtype = value.dtype
+
+        def restore(values: Any) -> Tensor:
+            restored = Tensor(list(values), shape=shape, dtype=dtype, device=device)
+            if device.kind == "cuda":
+                restored._attach_cuda_storage()
+            return restored
+
+        return [float(item) for item in value._flat_values()], restore
+    if isinstance(value, (list, tuple)):
+        flat = [float(item) for item in value]
+
+        def restore_list(values: Any) -> list[float]:
+            return list(values)
+
+        return flat, restore_list
+    return [float(value)], lambda values: list(values)[0]
 
 
 def _single_rank_payload(values: Any) -> Any:

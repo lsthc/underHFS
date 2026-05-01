@@ -229,6 +229,47 @@ def test_native_cuda_attention_kernel_when_available():
     assert result[3] > 3.0
 
 
+def test_native_cudnn_conv2d_backward_kernels_when_available():
+    state = status()
+    if not (state.cuda_enabled and state.cudnn_enabled):
+        return
+    from underhfs.native import require_native
+
+    core = require_native()
+    grad_input = core.cudnn_conv2d_backward_input_f32(
+        [1.0],
+        [2.0],
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+    )
+    grad_weight = core.cudnn_conv2d_backward_weight_f32(
+        [2.0],
+        [1.0],
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+    )
+    assert list(grad_input) == [2.0]
+    assert list(grad_weight) == [2.0]
+
+
 def test_conv2d_cuda_requires_cudnn_for_native_path_when_available():
     state = status()
     if not state.cuda_enabled:

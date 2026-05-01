@@ -91,12 +91,15 @@ external test and benchmark oracles.
   `UNDERHFS_WITH_NCCL` gates. Requested cuDNN/NCCL builds now fail during
   configuration when the vendor SDK is missing instead of producing a partial
   binary.
+- cuDNN builds expose native fp32 NCHW Conv2d forward plus backward-input and
+  backward-weight entrypoints through `_core`.
 - Memory benchmarks now include a tier-pressure report showing placement,
   offload events, OOM avoidance, and bottleneck tiers.
 - Distributed execution has a deterministic world-size-1 process group with
   barrier, broadcast, all-reduce, reduce-scatter, all-gather, DDP
   state/parameter passthrough, and `no_sync` semantics. Multi-process groups
-  require a native build with `UNDERHFS_WITH_NCCL=ON`.
+  use the native NCCL process-group wrapper when built with
+  `UNDERHFS_WITH_NCCL=ON`.
 - Serving exposes protocol capabilities, routes both `/predict` and
   `/v1/predict` for JSON HTTP, provides a standard-library WebSocket prediction
   loop, an optional `grpcio` JSON Predict service, and a C++ JSON stdin/stdout

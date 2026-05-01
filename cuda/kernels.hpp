@@ -116,6 +116,34 @@ std::vector<float> cudnn_conv2d_forward_f32_host(
     int stride_w,
     int pad_h,
     int pad_w);
+std::vector<float> cudnn_conv2d_backward_input_f32_host(
+    const std::vector<float>& grad_output,
+    const std::vector<float>& weight,
+    int batch,
+    int in_channels,
+    int height,
+    int width,
+    int out_channels,
+    int kernel_h,
+    int kernel_w,
+    int stride_h,
+    int stride_w,
+    int pad_h,
+    int pad_w);
+std::vector<float> cudnn_conv2d_backward_weight_f32_host(
+    const std::vector<float>& input,
+    const std::vector<float>& grad_output,
+    int batch,
+    int in_channels,
+    int height,
+    int width,
+    int out_channels,
+    int kernel_h,
+    int kernel_w,
+    int stride_h,
+    int stride_w,
+    int pad_h,
+    int pad_w);
 std::unordered_map<std::string, std::size_t> cuda_allocator_stats();
 void cuda_empty_cache();
 std::unordered_map<std::string, std::size_t> cuda_stream_stats();

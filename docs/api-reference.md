@@ -46,6 +46,19 @@ native runtime bring-up phase.
   AdamW parameter/state updates.
 - Native CUDA builds expose `_core.cuda_attention_f32(q, k, v, tokens, features, scale, causal)`
   for supported contiguous fp32 attention inference paths.
+- cuDNN builds expose `_core.cudnn_conv2d_forward_f32(...)`,
+  `_core.cudnn_conv2d_backward_input_f32(...)`, and
+  `_core.cudnn_conv2d_backward_weight_f32(...)` for fp32 NCHW dense
+  convolution paths.
+
+## Distributed
+
+- `underhfs.distributed.DistributedPolicy(world_size=1, rank=0, backend="nccl")`
+- `underhfs.distributed.process_group(policy=None)`
+- `underhfs.distributed.nccl_runtime_plan(policy)`
+- `underhfs.distributed.DistributedDataParallel(module, policy=None)`
+- NCCL native builds expose `_core.NcclProcessGroup(rank, world_size, unique_id_hex="")`
+  and `_core.nccl_create_unique_id_hex()`.
 
 ## Compile
 
