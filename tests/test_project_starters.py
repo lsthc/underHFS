@@ -33,10 +33,22 @@ def test_text2world_project_smoke():
 
 
 def test_livesee_project_smoke():
-    module = _load("project/liveSee/train_livesee_stream.py")
+    module = _load("project/liveSee/train_live_world.py")
     report = module.run_smoke(steps=2)
     assert report["project"] == "liveSee"
-    assert len(report["predictions"]) == len(report["labels"])
+    assert report["task"] == "ai_live_world_generation_and_play"
+    assert report["controls"] == "WASD"
+    assert "@" in report["ascii_view"]
+
+
+def test_livesee_play_server_state_and_wasd_move():
+    module = _load("project/liveSee/play_live_world.py")
+    session = module.LiveWorldSession(steps=1)
+    before = session.state()
+    after = session.move("d")
+    assert before["player"] == {"x": 0, "y": 0}
+    assert after["player"] == {"x": 1, "y": 0}
+    assert len(after["tiles"]) == 11
 
 
 def test_progamer_project_smoke():

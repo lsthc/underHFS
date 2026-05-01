@@ -1,15 +1,21 @@
-# underHFS liveSee starter
+# underHFS liveSee live world starter
 
-This project starts the real-time streaming perception branch of underHFS.
+This project starts the AI live world generation branch of underHFS.
 
-The smoke task trains a tiny frame classifier on synthetic stream features.
-The serving layer already has file, OpenCV, FFmpeg, WebSocket, HTTP, and gRPC
-paths; this project is the model-training side that can later consume those
-frames directly.
+The liveSee target is an AI-generated world that can be viewed and explored in
+real time. A tiny underHFS model learns a text-conditioned tile world, then a
+standard-library Python web server lets you walk through it with WASD.
 
-Run:
+Train the world generator smoke:
 
 ```powershell
 $env:PYTHONPATH = "src"
-python project\liveSee\train_livesee_stream.py
+python project\liveSee\train_live_world.py
+```
+
+Play locally:
+
+```powershell
+$env:PYTHONPATH = "src"
+python project\liveSee\play_live_world.py
 ```
