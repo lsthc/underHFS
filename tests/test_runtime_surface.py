@@ -109,6 +109,41 @@ def test_compile_native_attention_accepts_mixed_2d_shapes():
     assert plan.kernels[0].backend == "native-cuda-attention"
 
 
+def test_compile_native_attention_kernel_dispatch_when_available():
+    if not status().cuda_enabled:
+        return
+    from underhfs.compile import GraphIR, FusionGroup
+
+    graph = GraphIR()
+    graph.add(name="qk", op="matmul", inputs=("q", "k"), outputs=("qk",), shape=(2, 2), dtype="fp32", device="cuda:0")
+    graph.add(name="weights", op="softmax", inputs=("qk",), outputs=("weights",), shape=(2, 2), dtype="fp32", device="cuda:0")
+    graph.add(name="out", op="matmul", inputs=("weights", "v"), outputs=("out",), shape=(2, 2), dtype="fp32", device="cuda:0")
+    plan = lower_to_plan(
+        graph,
+        (FusionGroup(FusionKind.ATTENTION, ("qk", "weights", "out")),),
+        policy=CompilePolicy(native_required=True, allow_fallback=False),
+    )
+    q = tensor([[1.0, 0.0], [0.0, 1.0]]).cuda()
+    k = tensor([[1.0, 0.0], [0.0, 1.0]]).cuda()
+    v = tensor([[1.0, 2.0], [3.0, 4.0]]).cuda()
+    out = plan.kernels[0].dispatch(q, k, v, scale=1.0)
+    assert out.backend == "native_cuda_attention"
+    assert str(out.device) == "cuda:0"
+    assert out.tolist()[0][0] > 1.0
+
+
+def test_compile_native_fused_kernel_dispatch_when_available():
+    if not status().cuda_enabled:
+        return
+    x = tensor([1.0, 2.0]).cuda()
+    y = tensor([3.0, 4.0]).cuda()
+    report = explain(lambda a, b: (a + b) * (a + b), x, y)
+    kernel = next(item for item in report.plan.kernels if item.backend == "native-cuda-fused")
+    out = kernel.dispatch(x, y, op="add")
+    assert out.backend == "native_cuda"
+    assert out.tolist() == [4.0, 6.0]
+
+
 def test_compile_guard_specialization_cache_tracks_hits_and_misses():
     @compile(policy=CompilePolicy(enabled=True, guard_specialization=True))
     def fn(x):

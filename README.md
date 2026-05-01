@@ -111,6 +111,8 @@ external test and benchmark oracles.
   behavior.
 - Compile reports lower GraphIR fusion candidates into an executable eager
   fused plan, giving guard-specialized calls a concrete backend handoff object.
+  Native CUDA attention and supported CUDA fused elementwise/reduction kernels
+  can now be dispatched from `CompiledKernel.dispatch(...)`.
 - Fused AdamW now has a native CUDA fp32 update kernel exposed through `_core`
   and probed by diagnostics; native CUDA fp32 scaled-dot-product attention is
   exposed through `_core.cuda_attention_f32` and used by attention modules for

@@ -66,6 +66,9 @@ native runtime bring-up phase.
 - `underhfs.compile.explain(function, *args, policy=None, **kwargs)`
 - `CompileReport.to_dict()` includes graph, guards, fusion groups, cache stats,
   and an eager fused execution plan.
+- `CompiledKernel.dispatch(*inputs, op=None, scale=None, causal=False)` runs
+  supported native CUDA attention or fused add/mul/sum dispatch paths when the
+  lowered backend is executable.
 
 ## Serving
 

@@ -100,6 +100,17 @@ class CompiledKernel:
     backend: str
     executable: bool
 
+    def dispatch(self, *inputs: Any, op: str | None = None, scale: float | None = None, causal: bool = False) -> Any:
+        if not self.executable:
+            raise RuntimeError(f"{self.name} is not executable for backend {self.backend}")
+        if self.backend == "native-cuda-attention":
+            return _dispatch_native_cuda_attention(*inputs, scale=scale, causal=causal)
+        if self.backend == "native-cuda-fused":
+            return _dispatch_native_cuda_fused(*inputs, op=op)
+        if self.backend == "eager-fused-plan":
+            return _dispatch_eager_fused(*inputs, op=op)
+        raise RuntimeError(f"{self.backend} dispatch is not implemented")
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
@@ -343,6 +354,78 @@ def _native_cuda_attention_supported(nodes: list[IRNode]) -> bool:
         and all(len(shape) == 2 for shape in shapes)
         and all(node.device.startswith("cuda") and node.dtype == "fp32" for node in nodes)
     )
+
+
+def _dispatch_native_cuda_attention(*inputs: Any, scale: float | None, causal: bool) -> Any:
+    if len(inputs) != 3:
+        raise ValueError("native CUDA attention dispatch expects q, k, and v tensors")
+    q, k, v = inputs
+    _require_supported_cuda_tensor(q, "q")
+    _require_supported_cuda_tensor(k, "k")
+    _require_supported_cuda_tensor(v, "v")
+    if q.shape != k.shape or q.shape != v.shape or len(q.shape) != 2:
+        raise ValueError("native CUDA attention dispatch expects q/k/v shape [tokens, features]")
+    if not q.is_contiguous() or not k.is_contiguous() or not v.is_contiguous():
+        raise ValueError("native CUDA attention dispatch requires contiguous q/k/v tensors")
+    from underhfs.native import require_native
+    from underhfs.tensor import Tensor
+
+    core = require_native()
+    if not bool(getattr(core, "cuda_enabled", False)) or not hasattr(core, "cuda_attention_f32"):
+        raise RuntimeError("native CUDA attention dispatch requires _core.cuda_attention_f32")
+    tokens, features = q.shape
+    actual_scale = (features**-0.5) if scale is None else float(scale)
+    values = core.cuda_attention_f32(
+        [float(value) for value in q._flat_values()],
+        [float(value) for value in k._flat_values()],
+        [float(value) for value in v._flat_values()],
+        int(tokens),
+        int(features),
+        actual_scale,
+        bool(causal),
+    )
+    out = Tensor(list(values), shape=q.shape, dtype=q.dtype, device=q.device, layout=q.layout)
+    out._attach_cuda_storage()
+    out.backend = "native_cuda_attention"
+    return out
+
+
+def _dispatch_native_cuda_fused(*inputs: Any, op: str | None) -> Any:
+    if op not in {"add", "mul", "sum"}:
+        raise ValueError("native CUDA fused dispatch currently supports op='add', op='mul', or op='sum'")
+    if op in {"add", "mul"}:
+        if len(inputs) != 2:
+            raise ValueError(f"native CUDA fused {op} dispatch expects two tensors")
+        left, right = inputs
+        _require_supported_cuda_tensor(left, "left")
+        _require_supported_cuda_tensor(right, "right")
+        return left + right if op == "add" else left * right
+    if len(inputs) != 1:
+        raise ValueError("native CUDA fused sum dispatch expects one tensor")
+    (value,) = inputs
+    _require_supported_cuda_tensor(value, "value")
+    return value.sum()
+
+
+def _dispatch_eager_fused(*inputs: Any, op: str | None) -> Any:
+    if op == "add" and len(inputs) == 2:
+        return inputs[0] + inputs[1]
+    if op == "mul" and len(inputs) == 2:
+        return inputs[0] * inputs[1]
+    if op == "sum" and len(inputs) == 1:
+        return inputs[0].sum()
+    raise RuntimeError("eager fused plan dispatch needs an explicit supported op")
+
+
+def _require_supported_cuda_tensor(value: Any, name: str) -> None:
+    if not _looks_like_tensor(value):
+        raise TypeError(f"{name} must be an underHFS Tensor")
+    if str(getattr(value, "device", "")) != "cuda:0":
+        raise ValueError(f"{name} must be on cuda:0")
+    if getattr(getattr(value, "dtype", None), "value", "") != "fp32":
+        raise ValueError(f"{name} must be fp32")
+    if getattr(getattr(value, "layout", None), "value", "") != "dense":
+        raise ValueError(f"{name} must be dense")
 
 
 def _looks_like_tensor(value: Any) -> bool:
