@@ -1,4 +1,4 @@
-from underhfs.benchmarks import run_memory_benchmark, run_microbenchmarks
+from underhfs.benchmarks import run_benchmark_suite, run_memory_benchmark, run_microbenchmarks
 from underhfs.cuda import MemoryPolicy, MemoryTier
 
 
@@ -25,3 +25,13 @@ def test_memory_benchmark_reports_offload_pressure():
     assert payload["offload_events"] == 2
     assert payload["oom_avoided"] is True
     assert payload["prefetch_verified"] is True
+
+
+def test_benchmark_suite_reports_training_memory_and_oracle_contract():
+    result = run_benchmark_suite(size=2, iterations=2, warmup=0, include_cuda=False, include_oracle=False)
+    payload = result.to_dict()
+    assert payload["op_microbenchmarks"]
+    assert payload["training"]["steps"] == 2
+    assert payload["training"]["steps_per_second"] > 0
+    assert payload["memory"]["oom_avoided"] is True
+    assert payload["oracle"]["available"] is False

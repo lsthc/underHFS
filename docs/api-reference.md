@@ -37,6 +37,15 @@ native runtime bring-up phase.
 - `NetworkOffloadClient.load_tensor(handle, device=None)`
 - `NetworkOffloadClient.release(handle)`
 
+## Benchmarks
+
+- `underhfs.benchmarks.run_microbenchmarks(...)`
+- `underhfs.benchmarks.run_memory_benchmark(...)`
+- `underhfs.benchmarks.run_benchmark_suite(...)`
+
+`run_benchmark_suite` returns op microbenchmarks, tiny training throughput,
+memory/offload verification, and an optional PyTorch oracle comparison.
+
 ## Optimizers
 
 - `underhfs.optim.SGD`

@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from underhfs import __version__
-from underhfs.benchmarks import run_memory_benchmark, run_microbenchmarks
+from underhfs.benchmarks import run_benchmark_suite, run_memory_benchmark, run_microbenchmarks
 from underhfs.cuda import allocator_stats, device_count, devices, is_available, memory_budgets, stream_stats
 from underhfs.datasets import inspect_text_dataset, write_sample_text_dataset
 from underhfs.diagnostics import doctor
@@ -46,6 +46,15 @@ def _cmd_bench(args: argparse.Namespace) -> int:
     cuda_runtime = _cuda_runtime_report(native.cuda_enabled)
     payload = {
         "underhfs": __version__,
+        "suite": run_benchmark_suite(
+            size=max(2, min(args.size, 16)),
+            iterations=max(1, min(args.iterations, 5)),
+            warmup=max(0, min(args.warmup, 2)),
+            include_cuda=not args.no_cuda,
+            include_oracle=not args.no_oracle,
+        ).to_dict()
+        if args.suite
+        else None,
         "cuda_visible": is_available(),
         "cuda_device_count": device_count(),
         "cuda_devices": [device.to_dict() for device in devices()],
@@ -88,6 +97,7 @@ def _cmd_test(_: argparse.Namespace) -> int:
         "tests.test_runtime_memory_planner",
         "tests.test_guardrails",
         "tests.test_native_contract",
+        "tests.test_project_starters",
     ]
     passed = run_test_functions(modules)
     for name in passed:
@@ -247,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
     bench.add_argument("--iterations", type=int, default=20)
     bench.add_argument("--warmup", type=int, default=3)
     bench.add_argument("--no-cuda", action="store_true")
+    bench.add_argument("--suite", action="store_true")
+    bench.add_argument("--no-oracle", action="store_true")
     bench.set_defaults(func=_cmd_bench)
 
     doctor_cmd = sub.add_parser("doctor")

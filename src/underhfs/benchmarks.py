@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from statistics import median
 from time import perf_counter
-from typing import Callable
+from typing import Any, Callable
 
 from underhfs.cuda import MemoryPolicy, MemoryTier
 from underhfs.native import status as native_status
@@ -55,6 +55,46 @@ class MemoryBenchmarkResult:
         }
 
 
+@dataclass(frozen=True)
+class BenchmarkSuiteResult:
+    op_microbenchmarks: tuple[BenchmarkResult, ...]
+    training: dict[str, Any]
+    memory: MemoryBenchmarkResult
+    oracle: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "op_microbenchmarks": [result.to_dict() for result in self.op_microbenchmarks],
+            "training": self.training,
+            "memory": self.memory.to_dict(),
+            "oracle": self.oracle,
+        }
+
+
+def run_benchmark_suite(
+    *,
+    size: int = 16,
+    iterations: int = 5,
+    warmup: int = 1,
+    include_cuda: bool = True,
+    include_oracle: bool = True,
+) -> BenchmarkSuiteResult:
+    micro = tuple(
+        run_microbenchmarks(
+            size=size,
+            iterations=iterations,
+            warmup=warmup,
+            include_cuda=include_cuda,
+        )
+    )
+    return BenchmarkSuiteResult(
+        op_microbenchmarks=micro,
+        training=_training_benchmark(steps=max(2, iterations)),
+        memory=run_memory_benchmark(),
+        oracle=_oracle_benchmark(size=size) if include_oracle else {"available": False, "reason": "disabled"},
+    )
+
+
 def run_microbenchmarks(
     *,
     size: int = 32,
@@ -78,6 +118,62 @@ def run_microbenchmarks(
         results.append(_bench("add", "cuda", iterations, warmup, lambda: _cuda_add(size)))
         results.append(_bench("matmul", "cuda", iterations, warmup, lambda: _cuda_matmul(size)))
     return results
+
+
+def _training_benchmark(*, steps: int) -> dict[str, Any]:
+    from underhfs.functional import mse_loss
+    from underhfs.nn import Linear
+    from underhfs.optim import SGD
+
+    model = Linear(4, 4)
+    opt = SGD(model.parameters(), lr=1e-3)
+    x = tensor([[1.0, 2.0, 3.0, 4.0]])
+    y = tensor([[0.5, 1.0, 1.5, 2.0]])
+    losses: list[float] = []
+    start = perf_counter()
+    for _ in range(steps):
+        opt.zero_grad()
+        loss = mse_loss(model(x), y)
+        losses.append(loss.item())
+        loss.backward()
+        opt.step()
+    elapsed = perf_counter() - start
+    return {
+        "name": "linear_mse_training",
+        "backend": "underhfs",
+        "steps": steps,
+        "seconds": elapsed,
+        "steps_per_second": steps / elapsed if elapsed > 0 else float("inf"),
+        "initial_loss": losses[0],
+        "final_loss": losses[-1],
+    }
+
+
+def _oracle_benchmark(*, size: int) -> dict[str, Any]:
+    try:
+        import torch
+    except ImportError:
+        return {"available": False, "backend": "torch", "reason": "torch is not installed"}
+    left = _matrix(size)
+    right = _matrix(size, 1.0)
+    underhfs_start = perf_counter()
+    underhfs_out = tensor(left) @ tensor(right)
+    underhfs_seconds = perf_counter() - underhfs_start
+    torch_left = torch.tensor(left, dtype=torch.float32)
+    torch_right = torch.tensor(right, dtype=torch.float32)
+    torch_start = perf_counter()
+    torch_out = torch_left @ torch_right
+    torch_seconds = perf_counter() - torch_start
+    diff = abs(float(underhfs_out._storage[0]) - float(torch_out.flatten()[0].item()))
+    return {
+        "available": True,
+        "backend": "torch",
+        "op": "matmul",
+        "size": size,
+        "underhfs_seconds": underhfs_seconds,
+        "torch_seconds": torch_seconds,
+        "max_sample_abs_diff": diff,
+    }
 
 
 def run_memory_benchmark(
