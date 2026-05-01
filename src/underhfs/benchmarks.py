@@ -5,7 +5,6 @@ from statistics import median
 from time import perf_counter
 from typing import Callable
 
-from underhfs import tensor
 from underhfs.cuda import MemoryPolicy, MemoryTier
 from underhfs.native import status as native_status
 from underhfs.runtime import MemoryPlanner, OffloadExecutor
