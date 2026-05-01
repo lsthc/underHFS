@@ -91,6 +91,7 @@ when `ffmpeg` is available on `PATH`.
 - `underhfs.serialization.save_checkpoint(path, state=..., metadata=...)`
 - `underhfs.serialization.save_binary_state_dict(path, state)`
 - `underhfs.serialization.export_onnx(path, model_name=..., state=..., inputs=...)`
+  returns `"onnx"` or `"onnx-lite"` to report which writer path was used.
 - `underhfs.serialization.import_onnx(path)`
 - `underhfs.serialization.load_onnx_state_dict(path)`
 

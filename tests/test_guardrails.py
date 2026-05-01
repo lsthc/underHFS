@@ -31,6 +31,15 @@ def test_doctor_report_and_cli():
     report = doctor()
     assert report.python
     assert "git" in report.tools
+    assert isinstance(report.native_cudnn, bool)
+    assert isinstance(report.native_nccl, bool)
+    assert "onnx" in report.optional_dependencies
+    assert "grpcio" in report.optional_dependencies
+    assert "opencv-python" in report.optional_dependencies
+    assert "websockets" in report.optional_dependencies
     assert isinstance(report.cuda_devices, list)
     assert "vram" in report.memory_budgets or not report.cuda_visible
+    payload = report.to_dict()
+    assert "native_cudnn" in payload
+    assert "optional_dependencies" in payload
     assert main(["doctor"]) == 0

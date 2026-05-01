@@ -128,9 +128,9 @@ def export_onnx(
     state: dict[str, Any],
     inputs: dict[str, Any] | None = None,
     include_state: bool = True,
-) -> None:
+) -> str:
     if _try_export_real_onnx(path, model_name=model_name, state=state, inputs=inputs):
-        return
+        return "onnx"
     state_json = json.dumps(state, separators=(",", ":"), sort_keys=True).encode("utf-8")
     payload = {
         "ir_version": 10,
@@ -152,6 +152,7 @@ def export_onnx(
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return "onnx-lite"
 
 
 def import_onnx(path: str | Path) -> dict[str, Any]:

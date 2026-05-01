@@ -114,8 +114,9 @@ def test_binary_state_rejects_overlapping_tensor_spans(tmp_path=None):
 def test_onnx_lite_export_import_manifest(tmp_path=None):
     path = Path("tmp_underhfs_model.onnx.json") if tmp_path is None else tmp_path / "model.onnx.json"
     model = Linear(2, 1)
-    export_onnx(path, model_name="Linear", state=model.state_dict(), inputs={"x": {"shape": [1, 2]}})
+    exported_format = export_onnx(path, model_name="Linear", state=model.state_dict(), inputs={"x": {"shape": [1, 2]}})
     payload = import_onnx(path)
+    assert exported_format in {"onnx", "onnx-lite"}
     assert payload["producer_name"] == "underhfs"
     assert payload["graph"]["name"] == "Linear"
     assert payload["state_sha256"]
@@ -131,7 +132,8 @@ def test_real_onnx_export_import_when_dependency_is_available(tmp_path=None):
         return
     path = Path("tmp_underhfs_model.onnx") if tmp_path is None else tmp_path / "model.onnx"
     model = Linear(2, 1)
-    export_onnx(path, model_name="Linear", state=model.state_dict(), inputs={"x": {"shape": [1, 2]}})
+    exported_format = export_onnx(path, model_name="Linear", state=model.state_dict(), inputs={"x": {"shape": [1, 2]}})
+    assert exported_format == "onnx"
     onnx.checker.check_model(onnx.load(str(path)))
     payload = import_onnx(path)
     assert payload["format"] == "underhfs.onnx"

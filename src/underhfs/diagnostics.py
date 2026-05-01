@@ -3,6 +3,7 @@ from __future__ import annotations
 import platform
 import sys
 from dataclasses import dataclass, field
+from importlib.util import find_spec
 from pathlib import Path
 from shutil import which
 from subprocess import run
@@ -22,7 +23,10 @@ class DoctorReport:
     memory_budgets: dict[str, int]
     native_core: bool
     native_cuda: bool
+    native_cudnn: bool
+    native_nccl: bool
     native_probe: dict | None
+    optional_dependencies: dict[str, bool]
     tools: dict[str, str | None]
     warnings: list[str] = field(default_factory=list)
 
@@ -36,7 +40,10 @@ class DoctorReport:
             "memory_budgets": self.memory_budgets,
             "native_core": self.native_core,
             "native_cuda": self.native_cuda,
+            "native_cudnn": self.native_cudnn,
+            "native_nccl": self.native_nccl,
             "native_probe": self.native_probe,
+            "optional_dependencies": self.optional_dependencies,
             "tools": self.tools,
             "warnings": self.warnings,
         }
@@ -45,6 +52,7 @@ class DoctorReport:
 def doctor() -> DoctorReport:
     native = native_status()
     tools = {name: _find_tool(name) for name in ("git", "cmake", "ninja", "nvcc", "cl", "nvidia-smi")}
+    optional_dependencies = _optional_dependencies()
     cuda_devices = [device.to_dict() for device in devices()]
     budgets = {tier.value: size for tier, size in memory_budgets().items()}
     warnings: list[str] = []
@@ -60,6 +68,16 @@ def doctor() -> DoctorReport:
     if native.available:
         if not native.cuda_enabled:
             warnings.append("native core is installed, but CUDA support is disabled in this build.")
+        if native.cuda_enabled and not native.cudnn_enabled:
+            warnings.append("native CUDA build does not include cuDNN convolution paths.")
+        if native.cuda_enabled and not native.nccl_enabled:
+            warnings.append("native CUDA build does not include NCCL multi-process collectives.")
+        if not optional_dependencies["onnx"]:
+            warnings.append("optional dependency 'onnx' is missing; ONNX export uses underhfs.onnx-lite fallback.")
+        if not optional_dependencies["grpcio"]:
+            warnings.append("optional dependency 'grpcio' is missing; gRPC serving is manifest-only.")
+        if not optional_dependencies["opencv-python"]:
+            warnings.append("optional dependency 'opencv-python' is missing; webcam media adapter is disabled.")
         try:
             probe_result = native_probe()
         except Exception as exc:
@@ -73,7 +91,10 @@ def doctor() -> DoctorReport:
         memory_budgets=budgets,
         native_core=native.available,
         native_cuda=native.cuda_enabled,
+        native_cudnn=native.cudnn_enabled,
+        native_nccl=native.nccl_enabled,
         native_probe=probe_result,
+        optional_dependencies=optional_dependencies,
         tools=tools,
         warnings=warnings,
     )
@@ -96,6 +117,15 @@ def _find_tool(name: str) -> str | None:
             if candidates:
                 return str(candidates[0])
     return None
+
+
+def _optional_dependencies() -> dict[str, bool]:
+    return {
+        "onnx": find_spec("onnx") is not None,
+        "grpcio": find_spec("grpc") is not None,
+        "opencv-python": find_spec("cv2") is not None,
+        "websockets": find_spec("websockets") is not None,
+    }
 
 
 def nvidia_smi_summary() -> str | None:

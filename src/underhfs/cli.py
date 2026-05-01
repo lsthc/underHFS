@@ -215,13 +215,13 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 def _cmd_export(args: argparse.Namespace) -> int:
     model = _tiny_lm_from_args(args)
     if args.format == "onnx":
-        export_onnx(
+        actual_format = export_onnx(
             args.path,
             model_name="TransformerLM",
             state=model.state_dict(),
             inputs={"token_ids": {"shape": [args.seq_len], "dtype": "int64"}},
         )
-        print(json.dumps({"exported": args.path, "format": "onnx-lite", "model": "TransformerLM"}, indent=2))
+        print(json.dumps({"exported": args.path, "format": actual_format, "model": "TransformerLM"}, indent=2))
         return 0
     export_manifest(
         args.path,
