@@ -123,7 +123,8 @@ external test and benchmark oracles.
   has a standard-library HTTP JSON transport with upload, load, release, and
   checksum validation.
 - ONNX export/import keeps the `underhfs.onnx-lite` fallback and uses a real
-  optional `onnx` protobuf path when the dependency is installed.
+  optional `onnx` protobuf path when the dependency is installed, including
+  checker-valid graph inputs, outputs, metadata, and initializer state reload.
 - Serving includes JSON HTTP, a standard-library WebSocket prediction loop,
   optional-dependency-gated gRPC, and a C++ stdin/stdout serving executable plus
   Python process wrapper.

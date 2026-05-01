@@ -124,6 +124,27 @@ def test_onnx_lite_export_import_manifest(tmp_path=None):
         path.unlink()
 
 
+def test_real_onnx_export_import_when_dependency_is_available(tmp_path=None):
+    try:
+        import onnx
+    except ImportError:
+        return
+    path = Path("tmp_underhfs_model.onnx") if tmp_path is None else tmp_path / "model.onnx"
+    model = Linear(2, 1)
+    export_onnx(path, model_name="Linear", state=model.state_dict(), inputs={"x": {"shape": [1, 2]}})
+    onnx.checker.check_model(onnx.load(str(path)))
+    payload = import_onnx(path)
+    assert payload["format"] == "underhfs.onnx"
+    assert payload["metadata"]["format"] == "underhfs.onnx"
+    assert payload["metadata"]["state_sha256"]
+    assert payload["graph"]["inputs"][0]["name"] == "x"
+    assert payload["graph"]["outputs"][0]["name"] == "x_out"
+    assert payload["graph"]["nodes"][0]["op_type"] == "Identity"
+    assert _nested_close(load_onnx_state_dict(path), model.state_dict())
+    if tmp_path is None:
+        path.unlink()
+
+
 def _nested_close(left, right, tol=1e-6):
     if isinstance(left, dict):
         return left.keys() == right.keys() and all(_nested_close(left[key], right[key], tol) for key in left)

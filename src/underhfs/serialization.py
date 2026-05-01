@@ -159,8 +159,9 @@ def import_onnx(path: str | Path) -> dict[str, Any]:
         return _try_import_real_onnx(path)
     except ImportError:
         pass
-    except Exception:
-        pass
+    except Exception as exc:
+        if Path(path).suffix == ".onnx":
+            raise ValueError(f"failed to import ONNX protobuf model: {exc}") from exc
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if payload.get("format") != "underhfs.onnx-lite":
         raise ValueError("only underhfs.onnx-lite manifests are supported without the optional ONNX runtime")
@@ -201,23 +202,34 @@ def _try_export_real_onnx(
                 vals=flat,
             )
         )
-    graph_inputs = [
-        helper.make_tensor_value_info(
-            name,
-            TensorProto.FLOAT,
-            spec.get("shape", []),
-        )
-        for name, spec in (inputs or {}).items()
-    ]
+    graph_inputs = []
+    graph_outputs = []
+    nodes = []
+    for name, spec in (inputs or {}).items():
+        shape = spec.get("shape", [])
+        graph_inputs.append(helper.make_tensor_value_info(name, TensorProto.FLOAT, shape))
+        output_name = f"{name}_out"
+        graph_outputs.append(helper.make_tensor_value_info(output_name, TensorProto.FLOAT, shape))
+        nodes.append(helper.make_node("Identity", inputs=[name], outputs=[output_name], name=f"{name}_identity"))
+    if not graph_outputs:
+        graph_outputs = [
+            helper.make_tensor_value_info(name, TensorProto.FLOAT, _shape_of(value))
+            for name, value in state.items()
+        ]
     graph = helper.make_graph(
-        nodes=[],
+        nodes=nodes,
         name=model_name,
         inputs=graph_inputs,
-        outputs=[],
+        outputs=graph_outputs,
         initializer=initializers,
     )
     model = helper.make_model(graph, producer_name="underhfs")
     model.metadata_props.append(onnx.StringStringEntryProto(key="format", value="underhfs.onnx"))
+    state_json = json.dumps(state, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    model.metadata_props.append(
+        onnx.StringStringEntryProto(key="state_sha256", value=sha256(state_json).hexdigest())
+    )
+    onnx.checker.check_model(model)
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     onnx.save(model, str(target))
@@ -234,8 +246,34 @@ def _try_import_real_onnx(path: str | Path) -> dict[str, Any]:
     return {
         "format": "underhfs.onnx",
         "producer_name": model.producer_name,
+        "metadata": {item.key: item.value for item in model.metadata_props},
         "graph": {
             "name": model.graph.name,
+            "inputs": [
+                {
+                    "name": value.name,
+                    "shape": _value_info_shape(value),
+                    "data_type": _value_info_data_type(value),
+                }
+                for value in model.graph.input
+            ],
+            "outputs": [
+                {
+                    "name": value.name,
+                    "shape": _value_info_shape(value),
+                    "data_type": _value_info_data_type(value),
+                }
+                for value in model.graph.output
+            ],
+            "nodes": [
+                {
+                    "name": node.name,
+                    "op_type": node.op_type,
+                    "inputs": list(node.input),
+                    "outputs": list(node.output),
+                }
+                for node in model.graph.node
+            ],
             "initializers": [
                 {
                     "name": tensor_proto.name,
@@ -341,3 +379,24 @@ def _validate_tensor_layout(tensors: dict[str, Any], payload_nbytes: int) -> Non
             raise ValueError(f"overlapping tensor payloads: {previous_name} and {name}")
         previous_end = end
         previous_name = name
+
+
+def _value_info_shape(value_info: Any) -> list[int | str]:
+    tensor_type = value_info.type.tensor_type
+    dims: list[int | str] = []
+    for dim in tensor_type.shape.dim:
+        if dim.HasField("dim_value"):
+            dims.append(int(dim.dim_value))
+        elif dim.HasField("dim_param"):
+            dims.append(str(dim.dim_param))
+        else:
+            dims.append("?")
+    return dims
+
+
+def _value_info_data_type(value_info: Any) -> str:
+    try:
+        import onnx
+    except ImportError:
+        return str(value_info.type.tensor_type.elem_type)
+    return onnx.TensorProto.DataType.Name(value_info.type.tensor_type.elem_type)

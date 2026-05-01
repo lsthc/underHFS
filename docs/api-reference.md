@@ -93,3 +93,8 @@ when `ffmpeg` is available on `PATH`.
 - `underhfs.serialization.export_onnx(path, model_name=..., state=..., inputs=...)`
 - `underhfs.serialization.import_onnx(path)`
 - `underhfs.serialization.load_onnx_state_dict(path)`
+
+When the optional `onnx` package is installed, `.onnx` exports are real
+checker-valid `ModelProto` files with graph IO metadata, initializer tensors,
+and state checksum metadata. Without that dependency, underHFS writes and reads
+the JSON `underhfs.onnx-lite` fallback.
